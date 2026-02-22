@@ -2,18 +2,12 @@
 
 package grammars
 
-import "github.com/odvcencio/gotreesitter"
-
 func init() {
 	Register(LangEntry{
-		Name:       "comment",
-		Extensions: nil,
-		Language: func() *gotreesitter.Language {
-			lang := CommentLanguage()
-			lang.ExternalScanner = CommentExternalScanner{}
-			return lang
-		},
-		HighlightQuery:     commentHighlightQuery,
+		Name:           "comment",
+		Extensions:     nil,
+		Language:       CommentLanguage,
+		HighlightQuery: commentHighlightQuery,
 		TokenSourceFactory: defaultTokenSourceFactory("comment"),
 	})
 }

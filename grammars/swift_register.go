@@ -8,6 +8,7 @@ func init() {
 		Extensions:     []string{".swift"},
 		Language:       SwiftLanguage,
 		HighlightQuery: swiftHighlightQuery,
+		TokenSourceFactory: defaultTokenSourceFactory("swift"),
 	})
 }
 
