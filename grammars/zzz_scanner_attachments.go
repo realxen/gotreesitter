@@ -117,6 +117,7 @@ func init() {
 		"perl":            PerlExternalScanner{},
 		"crystal":         CrystalExternalScanner{},
 		"djot":            DjotExternalScanner{},
+		"cpp":             CppExternalScanner{},
 	}
 
 	for i := range registry {

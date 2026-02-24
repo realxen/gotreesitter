@@ -94,7 +94,7 @@ func TestAuditParseSupportIncludesCCustomTokenSource(t *testing.T) {
 	}
 }
 
-func TestAuditParseSupportIncludesCppGenericTokenSource(t *testing.T) {
+func TestAuditParseSupportIncludesCppDFA(t *testing.T) {
 	reports := AuditParseSupport()
 	if len(reports) == 0 {
 		t.Fatal("expected parse support reports")
@@ -110,8 +110,8 @@ func TestAuditParseSupportIncludesCppGenericTokenSource(t *testing.T) {
 	if cppReport == nil {
 		t.Fatal("expected cpp parse support report")
 	}
-	if cppReport.Backend != ParseBackendTokenSource {
-		t.Fatalf("expected cpp backend %q, got %q", ParseBackendTokenSource, cppReport.Backend)
+	if cppReport.Backend != ParseBackendDFA {
+		t.Fatalf("expected cpp backend %q, got %q", ParseBackendDFA, cppReport.Backend)
 	}
 }
 
