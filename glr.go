@@ -35,7 +35,9 @@ const (
 	defaultStackEntrySlabCap = 4 * 1024
 	// Retain enough entry-scratch capacity to avoid re-allocating large
 	// GLR stacks on every parse pass.
-	maxRetainedStackEntryCap = 1 * 1024 * 1024
+	// Benchmarked incremental workloads peak near ~256K entries; keep modest
+	// headroom while avoiding very large retained scratch slabs.
+	maxRetainedStackEntryCap = 512 * 1024
 	// Hard cap on concurrently retained GLR stacks in parseInternal.
 	maxGLRStacks = 64
 	// Tree-sitter's C runtime caps links per stack node at 8.
