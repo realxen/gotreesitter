@@ -49,10 +49,18 @@ type nodeArena struct {
 	used  int
 	refs  atomic.Int32
 
+	nodeSlabs      []nodeSlab
+	nodeSlabCursor int
+
 	childSlabs      []childSliceSlab
 	fieldSlabs      []fieldSliceSlab
 	childSlabCursor int
 	fieldSlabCursor int
+}
+
+type nodeSlab struct {
+	data []Node
+	used int
 }
 
 type childSliceSlab struct {
@@ -173,8 +181,38 @@ func (a *nodeArena) Release() {
 }
 
 func (a *nodeArena) reset() {
-	clear(a.nodes[:a.used])
+	primaryUsed := a.used
+	if primaryUsed > len(a.nodes) {
+		primaryUsed = len(a.nodes)
+	}
+	clear(a.nodes[:primaryUsed])
 	a.used = 0
+	for i := range a.nodeSlabs {
+		slab := &a.nodeSlabs[i]
+		clear(slab.data[:slab.used])
+		slab.used = 0
+	}
+	if len(a.nodeSlabs) > 0 {
+		retained := 0
+		keep := 0
+		limit := maxRetainedOverflowNodeCapacityForClass(a.class)
+		for i := 0; i < len(a.nodeSlabs); i++ {
+			capacity := len(a.nodeSlabs[i].data)
+			if capacity <= 0 {
+				break
+			}
+			if retained+capacity > limit {
+				break
+			}
+			retained += capacity
+			keep = i + 1
+		}
+		for i := keep; i < len(a.nodeSlabs); i++ {
+			a.nodeSlabs[i] = nodeSlab{}
+		}
+		a.nodeSlabs = a.nodeSlabs[:keep]
+	}
+	a.nodeSlabCursor = 0
 
 	for i := range a.childSlabs {
 		slab := &a.childSlabs[i]
@@ -207,8 +245,37 @@ func (a *nodeArena) allocNode() *Node {
 		a.used++
 		return n
 	}
-	// Fallback when slab is exhausted.
-	return &Node{}
+	if len(a.nodeSlabs) == 0 {
+		capacity := nodeCapacityForClass(a.class)
+		if capacity < minArenaNodeCap {
+			capacity = minArenaNodeCap
+		}
+		a.nodeSlabs = append(a.nodeSlabs, nodeSlab{data: make([]Node, capacity)})
+		a.nodeSlabCursor = 0
+	}
+	if a.nodeSlabCursor < 0 || a.nodeSlabCursor >= len(a.nodeSlabs) {
+		a.nodeSlabCursor = 0
+	}
+	for i := a.nodeSlabCursor; ; i++ {
+		if i >= len(a.nodeSlabs) {
+			lastCap := len(a.nodeSlabs[len(a.nodeSlabs)-1].data)
+			capacity := lastCap * 2
+			if capacity < minArenaNodeCap {
+				capacity = minArenaNodeCap
+			}
+			a.nodeSlabs = append(a.nodeSlabs, nodeSlab{data: make([]Node, capacity)})
+		}
+
+		slab := &a.nodeSlabs[i]
+		if slab.used >= len(slab.data) {
+			continue
+		}
+		idx := slab.used
+		slab.used++
+		a.nodeSlabCursor = i
+		a.used++
+		return &slab.data[idx]
+	}
 }
 
 func (a *nodeArena) ensureNodeCapacity(min int) {
@@ -227,6 +294,8 @@ func (a *nodeArena) ensureNodeCapacity(min int) {
 	}
 	a.nodes = make([]Node, newCap)
 	a.used = 0
+	a.nodeSlabs = nil
+	a.nodeSlabCursor = 0
 }
 
 func (a *nodeArena) allocNodeSlice(n int) []*Node {
@@ -336,6 +405,14 @@ func maxRetainedNodeCapacityForClass(class arenaClass) int {
 		return floor
 	}
 	return capByFactor
+}
+
+func maxRetainedOverflowNodeCapacityForClass(class arenaClass) int {
+	capacity := maxRetainedNodeCapacityForClass(class) / 2
+	if capacity < nodeCapacityForClass(class) {
+		return nodeCapacityForClass(class)
+	}
+	return capacity
 }
 
 func maxRetainedChildSliceCapForClass(class arenaClass) int {
