@@ -500,18 +500,6 @@ func uniqueArenas(arenas []*nodeArena, exclude *nodeArena) []*nodeArena {
 	return out
 }
 
-func (t *Tree) referencedArenas() []*nodeArena {
-	if t == nil {
-		return nil
-	}
-	refs := make([]*nodeArena, 0, 1+len(t.borrowedArena))
-	if t.arena != nil {
-		refs = append(refs, t.arena)
-	}
-	refs = append(refs, t.borrowedArena...)
-	return uniqueArenas(refs, nil)
-}
-
 // Release decrements arena references held by this tree.
 // After Release, the tree should be treated as invalid and not reused.
 func (t *Tree) Release() {

@@ -627,7 +627,7 @@ func TestBuildResultFoldExtrasPreservesFieldMappings(t *testing.T) {
 		{state: 0, node: trailingExtra},
 	}
 
-	tree := parser.buildResult(stack, source, nil, nil, false)
+	tree := parser.buildResult(stack, source, nil, nil, nil)
 	if tree == nil || tree.RootNode() == nil {
 		t.Fatal("buildResult returned nil tree/root")
 	}
@@ -681,6 +681,55 @@ func TestParserMultiDigitNumbers(t *testing.T) {
 	if root.Child(2).Text(tree.Source()) != "456" {
 		t.Errorf("second NUMBER text = %q, want %q", root.Child(2).Text(tree.Source()), "456")
 	}
+}
+
+func TestNodesFromGSSFiltersNilAndPreservesOrder(t *testing.T) {
+	var scratch gssScratch
+	n1 := NewLeafNode(1, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	n2 := NewLeafNode(1, true, 2, 3, Point{Row: 0, Column: 2}, Point{Row: 0, Column: 3})
+
+	var s gssStack
+	s.push(1, nil, &scratch)
+	s.push(2, n1, &scratch)
+	s.push(3, nil, &scratch)
+	s.push(4, n2, &scratch)
+
+	nodes := nodesFromGSS(s)
+	if len(nodes) != 2 {
+		t.Fatalf("nodesFromGSS len = %d, want 2", len(nodes))
+	}
+	if nodes[0] != n1 || nodes[1] != n2 {
+		t.Fatalf("nodesFromGSS order mismatch: got [%p %p], want [%p %p]", nodes[0], nodes[1], n1, n2)
+	}
+}
+
+func TestBuildResultFromGLRWithGSSOnlyStack(t *testing.T) {
+	lang := buildArithmeticLanguage()
+	parser := NewParser(lang)
+	source := []byte("1")
+	arena := acquireNodeArena(arenaClassFull)
+
+	leaf := newLeafNodeInArena(arena, 1, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	leaf.parseState = 1
+	expr := newParentNodeInArena(arena, 3, true, []*Node{leaf}, nil, 0)
+	expr.parseState = 2
+
+	var gScratch gssScratch
+	gss := newGSSStack(lang.InitialState, &gScratch)
+	gss.push(expr.parseState, expr, &gScratch)
+	stack := glrStack{gss: gss}
+
+	tree := parser.buildResultFromGLR([]glrStack{stack}, source, arena, nil, nil)
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("buildResultFromGLR returned nil tree/root")
+	}
+	if tree.RootNode() != expr {
+		t.Fatal("expected GSS-only stack result to reuse the GSS node as root")
+	}
+	if got := tree.RootNode().Text(tree.Source()); got != "1" {
+		t.Fatalf("root text = %q, want %q", got, "1")
+	}
+	tree.Release()
 }
 
 func TestParserLongChain(t *testing.T) {

@@ -72,6 +72,36 @@ type incrementalParseTiming struct {
 	entryScratchPeak uint64
 }
 
+type parseReuseState struct {
+	reusedAny bool
+	arenaRefs []*nodeArena
+}
+
+func (s *parseReuseState) markReused(node *Node, primary *nodeArena) {
+	if s == nil {
+		return
+	}
+	s.reusedAny = true
+	if node == nil {
+		return
+	}
+	s.arenaRefs = appendUniqueArenaRef(s.arenaRefs, node.ownerArena, primary)
+}
+
+func (s *parseReuseState) retainBorrowed(primary *nodeArena) []*nodeArena {
+	if s == nil || !s.reusedAny || len(s.arenaRefs) == 0 {
+		return nil
+	}
+	uniq := uniqueArenas(s.arenaRefs, primary)
+	if len(uniq) == 0 {
+		return nil
+	}
+	for _, a := range uniq {
+		a.Retain()
+	}
+	return uniq
+}
+
 func (t *incrementalParseTiming) toProfile() IncrementalParseProfile {
 	if t == nil {
 		return IncrementalParseProfile{}
@@ -1142,10 +1172,10 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		arena.ensureNodeCapacity(parseIncrementalArenaNodeCapacity(len(source)))
 		scratch.entries.ensureInitialCap(parseIncrementalEntryScratchCapacity(len(source)))
 	}
-	reusedAny := false
+	var reuseState parseReuseState
 
 	finalize := func(stacks []glrStack) *Tree {
-		return p.buildResultFromGLR(stacks, source, arena, oldTree, reusedAny)
+		return p.buildResultFromGLR(stacks, source, arena, oldTree, &reuseState)
 	}
 
 	var stacksBuf [4]glrStack
@@ -1210,12 +1240,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		if len(stacks) > 1 {
 			p.promotePrimaryStack(stacks)
 		}
-		maxCachedStacks := 0
 		for i := range stacks {
-			if i < maxCachedStacks {
-				stacks[i].cacheEntries = true
-				continue
-			}
 			stacks[i].cacheEntries = false
 			if stacks[i].gss.head != nil {
 				stacks[i].entries = nil
@@ -1252,7 +1277,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				if ok {
 					timing.reusedSubtrees++
 					timing.reusedBytes += uint64(reusedBytes)
-					reusedAny = true
+					reuseState.markReused(stacks[0].top().node, arena)
 					tok = nextTok
 					needToken = false
 					consecutiveReduces = 0
@@ -1260,7 +1285,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 			} else {
 				if nextTok, _, ok := p.tryReuseSubtree(&stacks[0], tok, ts, reuse, &scratch.entries, &scratch.gss); ok {
-					reusedAny = true
+					reuseState.markReused(stacks[0].top().node, arena)
 					tok = nextTok
 					needToken = false
 					consecutiveReduces = 0
@@ -1417,6 +1442,18 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 	// Iteration limit reached.
 	return finalize(stacks)
+}
+
+func appendUniqueArenaRef(refs []*nodeArena, arenaRef, exclude *nodeArena) []*nodeArena {
+	if arenaRef == nil || arenaRef == exclude {
+		return refs
+	}
+	for i := range refs {
+		if refs[i] == arenaRef {
+			return refs
+		}
+	}
+	return append(refs, arenaRef)
 }
 
 func (p *Parser) promotePrimaryStack(stacks []glrStack) {
@@ -2003,7 +2040,7 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 
 // buildResultFromGLR picks the best stack and constructs the final tree.
 // Prefers accepted stacks, then highest score, then most entries.
-func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nodeArena, oldTree *Tree, reusedAny bool) *Tree {
+func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState) *Tree {
 	if len(stacks) == 0 {
 		arena.Release()
 		return parseErrorTree(source, p.language)
@@ -2018,12 +2055,12 @@ func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nod
 
 	selected := stacks[best]
 	if len(selected.entries) > 0 {
-		return p.buildResult(selected.entries, source, arena, oldTree, reusedAny)
+		return p.buildResult(selected.entries, source, arena, oldTree, reuseState)
 	}
 	if selected.gss.head == nil {
-		return p.buildResult(nil, source, arena, oldTree, reusedAny)
+		return p.buildResult(nil, source, arena, oldTree, reuseState)
 	}
-	return p.buildResultFromNodes(nodesFromGSS(selected.gss), source, arena, oldTree, reusedAny)
+	return p.buildResultFromNodes(nodesFromGSS(selected.gss), source, arena, oldTree, reuseState)
 }
 
 // lookupAction looks up the parse action for the given state and symbol.
@@ -2183,17 +2220,17 @@ func nodesFromGSS(stack gssStack) []*Node {
 }
 
 // buildResult constructs the final Tree from a stack of entries.
-func (p *Parser) buildResult(stack []stackEntry, source []byte, arena *nodeArena, oldTree *Tree, reusedAny bool) *Tree {
+func (p *Parser) buildResult(stack []stackEntry, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState) *Tree {
 	var nodes []*Node
 	for _, entry := range stack {
 		if entry.node != nil {
 			nodes = append(nodes, entry.node)
 		}
 	}
-	return p.buildResultFromNodes(nodes, source, arena, oldTree, reusedAny)
+	return p.buildResultFromNodes(nodes, source, arena, oldTree, reuseState)
 }
 
-func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeArena, oldTree *Tree, reusedAny bool) *Tree {
+func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState) *Tree {
 	if len(nodes) == 0 {
 		arena.Release()
 		if isWhitespaceOnlySource(source) {
@@ -2213,13 +2250,22 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		expectedRootSymbol = oldTree.RootNode().symbol
 		hasExpectedRoot = true
 	}
+	borrowedResolved := false
+	var borrowed []*nodeArena
+	getBorrowed := func() []*nodeArena {
+		if borrowedResolved {
+			return borrowed
+		}
+		borrowed = reuseState.retainBorrowed(arena)
+		borrowedResolved = true
+		return borrowed
+	}
 
 	if len(nodes) == 1 {
 		candidate := nodes[0]
 		extendNodeToTrailingWhitespace(candidate, source)
 		if !hasExpectedRoot || candidate.symbol == expectedRootSymbol {
-			borrowed := collectBorrowedArenasForRoot(candidate, arena, oldTree, reusedAny)
-			return newTreeWithArenas(candidate, source, p.language, arena, borrowed)
+			return newTreeWithArenas(candidate, source, p.language, arena, getBorrowed())
 		}
 
 		// Incremental reuse guard: if the only stacked node doesn't match the
@@ -2233,8 +2279,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		}
 		root := newParentNodeInArena(arena, expectedRootSymbol, true, rootChildren, nil, 0)
 		extendNodeToTrailingWhitespace(root, source)
-		borrowed := collectBorrowedArenasForRoot(root, arena, oldTree, reusedAny)
-		return newTreeWithArenas(root, source, p.language, arena, borrowed)
+		return newTreeWithArenas(root, source, p.language, arena, getBorrowed())
 	}
 
 	// When multiple nodes remain on the stack, check whether all but one
@@ -2260,7 +2305,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		}
 	}
 	if realRoot != nil {
-		if reusedAny {
+		if reuseState != nil && reuseState.reusedAny {
 			realRoot = cloneNodeInArena(arena, realRoot)
 			realRoot.parent = nil
 			realRoot.childIndex = -1
@@ -2327,8 +2372,7 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 		}
 		extendNodeToTrailingWhitespace(realRoot, source)
 		if !hasExpectedRoot || realRoot.symbol == expectedRootSymbol {
-			borrowed := collectBorrowedArenasForRoot(realRoot, arena, oldTree, reusedAny)
-			return newTreeWithArenas(realRoot, source, p.language, arena, borrowed)
+			return newTreeWithArenas(realRoot, source, p.language, arena, getBorrowed())
 		}
 	}
 
@@ -2340,46 +2384,5 @@ func (p *Parser) buildResultFromNodes(nodes []*Node, source []byte, arena *nodeA
 	root := newParentNodeInArena(arena, rootSymbol, true, rootChildren, nil, 0)
 	root.hasError = true
 	extendNodeToTrailingWhitespace(root, source)
-	borrowed := collectBorrowedArenasForRoot(root, arena, oldTree, reusedAny)
-	return newTreeWithArenas(root, source, p.language, arena, borrowed)
-}
-
-func collectBorrowedArenasForRoot(root *Node, primary *nodeArena, oldTree *Tree, reusedAny bool) []*nodeArena {
-	if !reusedAny || oldTree == nil || root == nil {
-		return nil
-	}
-	var stack []*Node
-	stack = append(stack, root)
-	refs := make([]*nodeArena, 0, 4)
-
-	for len(stack) > 0 {
-		last := len(stack) - 1
-		n := stack[last]
-		stack = stack[:last]
-		if n == nil {
-			continue
-		}
-		if a := n.ownerArena; a != nil && a != primary {
-			seen := false
-			for i := range refs {
-				if refs[i] == a {
-					seen = true
-					break
-				}
-			}
-			if !seen {
-				refs = append(refs, a)
-			}
-		}
-		if len(n.children) > 0 {
-			stack = append(stack, n.children...)
-		}
-	}
-	if len(refs) == 0 {
-		return nil
-	}
-	for _, a := range refs {
-		a.Retain()
-	}
-	return refs
+	return newTreeWithArenas(root, source, p.language, arena, getBorrowed())
 }
