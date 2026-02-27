@@ -25,6 +25,7 @@ type Parser struct {
 	hasRecoverState   []bool
 	hasRecoverSymbol  []bool
 	recoverByState    [][]recoverSymbolAction
+	hasKeywordState   []bool
 	forceRawSpanAll   bool
 	forceRawSpanTable []bool
 	included          []Range
@@ -201,6 +202,7 @@ func NewParser(lang *Language) *Parser {
 			p.smallLookup = buildSmallLookup(lang)
 		}
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
+		p.hasKeywordState = buildKeywordStates(lang)
 	}
 	return p
 }
@@ -208,6 +210,127 @@ func NewParser(lang *Language) *Parser {
 func buildStateRecoverTable(lang *Language) []bool {
 	_, table, _ := buildRecoverActionsByState(lang)
 	return table
+}
+
+func buildKeywordStates(lang *Language) []bool {
+	if lang == nil || lang.KeywordCaptureToken == 0 || len(lang.KeywordLexStates) == 0 {
+		return nil
+	}
+
+	symbolCount := int(lang.SymbolCount)
+	if symbolCount <= 0 {
+		symbolCount = len(lang.SymbolNames)
+	}
+	if symbolCount <= 0 {
+		symbolCount = 64
+	}
+	keywordSymbols := make([]bool, symbolCount)
+	ensureSymbolCap := func(sym Symbol) {
+		idx := int(sym)
+		if idx < len(keywordSymbols) {
+			return
+		}
+		newLen := len(keywordSymbols)
+		if newLen == 0 {
+			newLen = 64
+		}
+		for idx >= newLen {
+			newLen *= 2
+		}
+		expanded := make([]bool, newLen)
+		copy(expanded, keywordSymbols)
+		keywordSymbols = expanded
+	}
+
+	keywordCount := 0
+	for i := range lang.KeywordLexStates {
+		sym := lang.KeywordLexStates[i].AcceptToken
+		if sym == 0 || sym == lang.KeywordCaptureToken {
+			continue
+		}
+		ensureSymbolCap(sym)
+		if !keywordSymbols[sym] {
+			keywordSymbols[sym] = true
+			keywordCount++
+		}
+	}
+	if keywordCount == 0 {
+		return nil
+	}
+
+	stateCount := int(lang.StateCount)
+	if stateCount <= 0 {
+		stateCount = len(lang.ParseTable)
+	}
+	if smallCount := int(lang.LargeStateCount) + len(lang.SmallParseTableMap); smallCount > stateCount {
+		stateCount = smallCount
+	}
+	if stateCount <= 0 {
+		return nil
+	}
+
+	hasKeyword := make([]bool, stateCount)
+	anyState := false
+	for state := 0; state < len(lang.ParseTable) && state < stateCount; state++ {
+		row := lang.ParseTable[state]
+		for sym, idx := range row {
+			if idx == 0 {
+				continue
+			}
+			if sym < len(keywordSymbols) && keywordSymbols[sym] {
+				hasKeyword[state] = true
+				anyState = true
+				break
+			}
+		}
+	}
+
+	if len(lang.SmallParseTableMap) > 0 && len(lang.SmallParseTable) > 0 {
+		base := int(lang.LargeStateCount)
+		table := lang.SmallParseTable
+		for smallIdx, offset := range lang.SmallParseTableMap {
+			state := base + smallIdx
+			if state < 0 || state >= stateCount || hasKeyword[state] {
+				continue
+			}
+			pos := int(offset)
+			if pos >= len(table) {
+				continue
+			}
+			groupCount := int(table[pos])
+			pos++
+			for i := 0; i < groupCount; i++ {
+				if pos+1 >= len(table) {
+					break
+				}
+				sectionValue := table[pos]
+				groupSymbolCount := int(table[pos+1])
+				pos += 2
+				end := pos + groupSymbolCount
+				if end > len(table) {
+					end = len(table)
+				}
+				if sectionValue != 0 {
+					for _, sym := range table[pos:end] {
+						if int(sym) < len(keywordSymbols) && keywordSymbols[sym] {
+							hasKeyword[state] = true
+							anyState = true
+							break
+						}
+					}
+				}
+				pos = end
+				if hasKeyword[state] {
+					break
+				}
+			}
+		}
+	}
+
+	if !anyState {
+		return nil
+	}
+	return hasKeyword
 }
 
 func buildRecoverActionsByState(lang *Language) ([][]recoverSymbolAction, []bool, []bool) {
@@ -526,6 +649,7 @@ func (p *Parser) Parse(source []byte) (*Tree, error) {
 		lexer:             lexer,
 		language:          p.language,
 		lookupActionIndex: p.lookupActionIndex,
+		hasKeywordState:   p.hasKeywordState,
 	}
 	if p.language.ExternalScanner != nil {
 		ts.externalPayload = p.language.ExternalScanner.Create()
@@ -561,6 +685,7 @@ func (p *Parser) ParseIncremental(source []byte, oldTree *Tree) (*Tree, error) {
 		lexer:             lexer,
 		language:          p.language,
 		lookupActionIndex: p.lookupActionIndex,
+		hasKeywordState:   p.hasKeywordState,
 	}
 	if p.language.ExternalScanner != nil {
 		ts.externalPayload = p.language.ExternalScanner.Create()
@@ -597,6 +722,7 @@ func (p *Parser) ParseIncrementalProfiled(source []byte, oldTree *Tree) (*Tree, 
 		lexer:             lexer,
 		language:          p.language,
 		lookupActionIndex: p.lookupActionIndex,
+		hasKeywordState:   p.hasKeywordState,
 	}
 	if p.language.ExternalScanner != nil {
 		ts.externalPayload = p.language.ExternalScanner.Create()
@@ -670,13 +796,7 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 	} else {
 		reuse = p.reuseCursor.reset(oldTree, source, &p.reuseScratch)
 	}
-	arenaClass := arenaClassIncremental
-	// Very large files can outgrow incremental defaults and trigger repeated
-	// fallback allocations; use full-parse slab sizing only beyond this point.
-	const incrementalUseFullArenaThreshold = 1 * 1024 * 1024
-	if len(source) >= incrementalUseFullArenaThreshold {
-		arenaClass = arenaClassFull
-	}
+	arenaClass := incrementalArenaClassForSource(source)
 	tree := p.parseInternal(source, ts, reuse, oldTree, arenaClass, timing)
 	if reuse != nil {
 		if timing != nil {
@@ -688,6 +808,17 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 		}
 	}
 	return tree
+}
+
+func incrementalArenaClassForSource(source []byte) arenaClass {
+	arenaClass := arenaClassIncremental
+	// Very large files can outgrow incremental defaults and trigger repeated
+	// fallback allocations; use full-parse slab sizing only beyond this point.
+	const incrementalUseFullArenaThreshold = 1 * 1024 * 1024
+	if len(source) >= incrementalUseFullArenaThreshold {
+		arenaClass = arenaClassFull
+	}
+	return arenaClass
 }
 
 func canReuseUnchangedTree(source []byte, oldTree *Tree, lang *Language) bool {
@@ -705,6 +836,7 @@ type dfaTokenSource struct {
 	state    StateID
 
 	lookupActionIndex func(state StateID, sym Symbol) uint16
+	hasKeywordState   []bool
 	externalPayload   any
 	externalValid     []bool
 }
@@ -1164,6 +1296,12 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 	if tok.EndByte <= tok.StartByte {
 		return tok
 	}
+	if len(d.hasKeywordState) > 0 {
+		state := int(d.state)
+		if state >= 0 && state < len(d.hasKeywordState) && !d.hasKeywordState[state] {
+			return tok
+		}
+	}
 
 	start := int(tok.StartByte)
 	end := int(tok.EndByte)
@@ -1184,6 +1322,18 @@ func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
 	}
 	if kwTok.EndByte != uint32(end-start) {
 		return tok
+	}
+
+	// Context-aware promotion: only use the keyword symbol if the current
+	// parser state has a valid action for it. This prevents contextual
+	// keywords like "get"/"set" from being promoted in positions where
+	// they should be treated as identifiers (e.g., obj.get(...)).
+	if d.lookupActionIndex != nil {
+		kwHasAction := d.lookupActionIndex(d.state, kwTok.Symbol) != 0
+		idHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
+		if !kwHasAction && idHasAction {
+			return tok // parser expects identifier, not keyword
+		}
 	}
 
 	tok.Symbol = kwTok.Symbol
@@ -1590,18 +1740,18 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			}
 
 			// --- Extra token handling (comments, whitespace) ---
-				if len(actions) > 0 &&
-					actions[0].Type == ParseActionShift && actions[0].Extra {
-					named := p.isNamedSymbol(tok.Symbol)
-					leaf := newLeafNodeInArena(arena, tok.Symbol, named,
-						tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
-					leaf.isExtra = true
-					leaf.parseState = currentState
-					p.pushStackNode(s, currentState, leaf, &scratch.entries, &scratch.gss)
-					nodeCount++
-					needToken = true
-					continue
-				}
+			if len(actions) > 0 &&
+				actions[0].Type == ParseActionShift && actions[0].Extra {
+				named := p.isNamedSymbol(tok.Symbol)
+				leaf := newLeafNodeInArena(arena, tok.Symbol, named,
+					tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
+				leaf.isExtra = true
+				leaf.parseState = currentState
+				p.pushStackNode(s, currentState, leaf, &scratch.entries, &scratch.gss)
+				nodeCount++
+				needToken = true
+				continue
+			}
 
 			// --- No action: error handling ---
 			if len(actions) == 0 {

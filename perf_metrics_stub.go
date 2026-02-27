@@ -22,6 +22,13 @@ type PerfCounters struct {
 	ReuseNodesPopped       uint64
 	ReuseCandidatesChecked uint64
 	ReuseSuccesses         uint64
+	ReuseLeafSuccesses     uint64
+	ReuseNonLeafChecks     uint64
+	ReuseNonLeafSuccesses  uint64
+	ReuseNonLeafBytes      uint64
+	ReuseNonLeafNoGoto     uint64
+	ReuseNonLeafStateMiss  uint64
+	ReuseNonLeafStateZero  uint64
 	MergeStacksInHist      [maxGLRStacks + 2]uint64
 	MergeAliveHist         [maxGLRStacks + 2]uint64
 	ForkActionsHist        [8]uint64
@@ -45,3 +52,9 @@ func perfRecordReusePushed(int)         {}
 func perfRecordReusePopped()            {}
 func perfRecordReuseCandidates(int)     {}
 func perfRecordReuseSuccess()           {}
+func perfRecordReuseLeafSuccess()       {}
+func perfRecordReuseNonLeafCheck()      {}
+func perfRecordReuseNonLeafSuccess(uint32) {}
+func perfRecordReuseNonLeafNoGoto()     {}
+func perfRecordReuseNonLeafStateMiss()  {}
+func perfRecordReuseNonLeafStateZero()  {}

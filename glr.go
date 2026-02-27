@@ -64,9 +64,10 @@ type glrMergeKey struct {
 }
 
 type glrMergeSlot struct {
-	key     glrMergeKey
-	indices [maxStacksPerMergeKey]int
-	count   int
+	key        glrMergeKey
+	indices    [maxStacksPerMergeKey]int
+	count      int
+	worstIndex int
 }
 
 type glrEntryScratch struct {
@@ -533,11 +534,11 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			slotCount++
 			slots[slotIndex].key = key
 			slots[slotIndex].count = 0
+			slots[slotIndex].worstIndex = -1
 		}
 		slot := &slots[slotIndex]
 
 		duplicateIndex := -1
-		worstIndex := -1
 		for j := 0; j < slot.count; j++ {
 			idx := slot.indices[j]
 			existing := &result[idx]
@@ -545,13 +546,13 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 				duplicateIndex = idx
 				break
 			}
-			if worstIndex == -1 || stackCompare(*existing, result[worstIndex]) < 0 {
-				worstIndex = idx
-			}
 		}
 		if duplicateIndex >= 0 {
 			if stackCompare(stack, result[duplicateIndex]) > 0 {
 				result[duplicateIndex] = stack
+				if slot.worstIndex == duplicateIndex {
+					slot.worstIndex = recomputeMergeSlotWorst(slot, result)
+				}
 			}
 			continue
 		}
@@ -561,6 +562,9 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			result = append(result, stack)
 			slot.indices[slot.count] = idx
 			slot.count++
+			if slot.worstIndex < 0 || stackCompare(result[idx], result[slot.worstIndex]) < 0 {
+				slot.worstIndex = idx
+			}
 			continue
 		}
 		if perfCountersEnabled {
@@ -569,16 +573,31 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 
 		// Per-key alternative budget reached: replace the weakest
 		// retained candidate only if this stack is better.
-		if worstIndex >= 0 && stackCompare(stack, result[worstIndex]) > 0 {
+		if slot.worstIndex >= 0 && stackCompare(stack, result[slot.worstIndex]) > 0 {
 			if perfCountersEnabled {
 				perfRecordMergeReplacement()
 			}
-			result[worstIndex] = stack
+			result[slot.worstIndex] = stack
+			slot.worstIndex = recomputeMergeSlotWorst(slot, result)
 		}
 	}
 	scratch.result = result
 	scratch.slots = slots[:slotCount]
 	return result
+}
+
+func recomputeMergeSlotWorst(slot *glrMergeSlot, result []glrStack) int {
+	if slot == nil || slot.count == 0 {
+		return -1
+	}
+	worst := slot.indices[0]
+	for j := 1; j < slot.count; j++ {
+		idx := slot.indices[j]
+		if stackCompare(result[idx], result[worst]) < 0 {
+			worst = idx
+		}
+	}
+	return worst
 }
 
 func ensureMergeResultCap(scratch *glrMergeScratch, n int) []glrStack {

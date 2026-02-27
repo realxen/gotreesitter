@@ -258,6 +258,55 @@ func buildArithmeticRecoverLanguage() *Language {
 	}
 }
 
+func buildKeywordStateLanguageDense() *Language {
+	return &Language{
+		Name:                "keyword_state_dense",
+		SymbolCount:         4,
+		TokenCount:          3,
+		StateCount:          3,
+		LargeStateCount:     3,
+		KeywordCaptureToken: 1, // identifier
+		KeywordLexStates: []LexState{
+			{AcceptToken: 0},
+			{AcceptToken: 1}, // capture token
+			{AcceptToken: 2}, // keyword token
+		},
+		// columns: EOF(0), IDENT(1), KW_IF(2), stmt(3)
+		ParseTable: [][]uint16{
+			{0, 3, 4, 0}, // state 0: keyword allowed
+			{0, 3, 0, 0}, // state 1: identifier-only
+			{0, 0, 4, 0}, // state 2: keyword-only
+		},
+	}
+}
+
+func buildKeywordStateLanguageSmall() *Language {
+	return &Language{
+		Name:                "keyword_state_small",
+		SymbolCount:         4,
+		TokenCount:          3,
+		StateCount:          2,
+		LargeStateCount:     1,
+		KeywordCaptureToken: 1, // identifier
+		KeywordLexStates: []LexState{
+			{AcceptToken: 0},
+			{AcceptToken: 2}, // keyword token
+		},
+		// state 0 dense row: no keyword actions
+		ParseTable: [][]uint16{
+			{0, 3, 0, 0},
+		},
+		// state 1 uses small table and allows KW_IF (symbol 2).
+		SmallParseTableMap: []uint32{0},
+		SmallParseTable: []uint16{
+			1, // group count
+			4, // section action index
+			1, // symbol count
+			2, // KW_IF symbol
+		},
+	}
+}
+
 func TestNewParser(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
@@ -534,6 +583,47 @@ func TestBuildStateRecoverTableMarksRecoverStates(t *testing.T) {
 	}
 	if !table[2] {
 		t.Fatal("state 2 should be marked recoverable")
+	}
+}
+
+func TestBuildKeywordStatesDense(t *testing.T) {
+	lang := buildKeywordStateLanguageDense()
+	table := buildKeywordStates(lang)
+	if len(table) != int(lang.StateCount) {
+		t.Fatalf("keyword state table len = %d, want %d", len(table), lang.StateCount)
+	}
+	if !table[0] {
+		t.Fatal("state 0 should allow keyword promotion")
+	}
+	if table[1] {
+		t.Fatal("state 1 should not allow keyword promotion")
+	}
+	if !table[2] {
+		t.Fatal("state 2 should allow keyword promotion")
+	}
+}
+
+func TestBuildKeywordStatesSmall(t *testing.T) {
+	lang := buildKeywordStateLanguageSmall()
+	table := buildKeywordStates(lang)
+	if len(table) != int(lang.StateCount) {
+		t.Fatalf("keyword state table len = %d, want %d", len(table), lang.StateCount)
+	}
+	if table[0] {
+		t.Fatal("state 0 should not allow keyword promotion")
+	}
+	if !table[1] {
+		t.Fatal("state 1 should allow keyword promotion from small parse table")
+	}
+}
+
+func TestBuildKeywordStatesNilWhenNoKeywordActions(t *testing.T) {
+	lang := buildKeywordStateLanguageDense()
+	lang.ParseTable[0][2] = 0
+	lang.ParseTable[2][2] = 0
+	table := buildKeywordStates(lang)
+	if table != nil {
+		t.Fatalf("expected nil keyword state table, got len=%d", len(table))
 	}
 }
 

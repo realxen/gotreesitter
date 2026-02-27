@@ -28,6 +28,13 @@ type perfCountersData struct {
 	reuseNodesPopped       atomic.Uint64
 	reuseCandidatesChecked atomic.Uint64
 	reuseSuccesses         atomic.Uint64
+	reuseLeafSuccesses     atomic.Uint64
+	reuseNonLeafChecks     atomic.Uint64
+	reuseNonLeafSuccesses  atomic.Uint64
+	reuseNonLeafBytes      atomic.Uint64
+	reuseNonLeafNoGoto     atomic.Uint64
+	reuseNonLeafStateMiss  atomic.Uint64
+	reuseNonLeafStateZero  atomic.Uint64
 	mergeStacksInHist      [perfMergeHistBins]atomic.Uint64
 	mergeAliveHist         [perfMergeHistBins]atomic.Uint64
 	forkActionsHist        [perfForkHistBins]atomic.Uint64
@@ -53,6 +60,13 @@ type PerfCounters struct {
 	ReuseNodesPopped       uint64
 	ReuseCandidatesChecked uint64
 	ReuseSuccesses         uint64
+	ReuseLeafSuccesses     uint64
+	ReuseNonLeafChecks     uint64
+	ReuseNonLeafSuccesses  uint64
+	ReuseNonLeafBytes      uint64
+	ReuseNonLeafNoGoto     uint64
+	ReuseNonLeafStateMiss  uint64
+	ReuseNonLeafStateZero  uint64
 	MergeStacksInHist      [perfMergeHistBins]uint64
 	MergeAliveHist         [perfMergeHistBins]uint64
 	ForkActionsHist        [perfForkHistBins]uint64
@@ -76,6 +90,13 @@ func ResetPerfCounters() {
 	perfCounters.reuseNodesPopped.Store(0)
 	perfCounters.reuseCandidatesChecked.Store(0)
 	perfCounters.reuseSuccesses.Store(0)
+	perfCounters.reuseLeafSuccesses.Store(0)
+	perfCounters.reuseNonLeafChecks.Store(0)
+	perfCounters.reuseNonLeafSuccesses.Store(0)
+	perfCounters.reuseNonLeafBytes.Store(0)
+	perfCounters.reuseNonLeafNoGoto.Store(0)
+	perfCounters.reuseNonLeafStateMiss.Store(0)
+	perfCounters.reuseNonLeafStateZero.Store(0)
 	for i := range perfCounters.mergeStacksInHist {
 		perfCounters.mergeStacksInHist[i].Store(0)
 	}
@@ -106,6 +127,13 @@ func PerfCountersSnapshot() PerfCounters {
 	out.ReuseNodesPopped = perfCounters.reuseNodesPopped.Load()
 	out.ReuseCandidatesChecked = perfCounters.reuseCandidatesChecked.Load()
 	out.ReuseSuccesses = perfCounters.reuseSuccesses.Load()
+	out.ReuseLeafSuccesses = perfCounters.reuseLeafSuccesses.Load()
+	out.ReuseNonLeafChecks = perfCounters.reuseNonLeafChecks.Load()
+	out.ReuseNonLeafSuccesses = perfCounters.reuseNonLeafSuccesses.Load()
+	out.ReuseNonLeafBytes = perfCounters.reuseNonLeafBytes.Load()
+	out.ReuseNonLeafNoGoto = perfCounters.reuseNonLeafNoGoto.Load()
+	out.ReuseNonLeafStateMiss = perfCounters.reuseNonLeafStateMiss.Load()
+	out.ReuseNonLeafStateZero = perfCounters.reuseNonLeafStateZero.Load()
 	for i := range out.MergeStacksInHist {
 		out.MergeStacksInHist[i] = perfCounters.mergeStacksInHist[i].Load()
 	}
@@ -206,6 +234,33 @@ func perfRecordReuseCandidates(n int) {
 
 func perfRecordReuseSuccess() {
 	perfCounters.reuseSuccesses.Add(1)
+}
+
+func perfRecordReuseLeafSuccess() {
+	perfCounters.reuseLeafSuccesses.Add(1)
+}
+
+func perfRecordReuseNonLeafCheck() {
+	perfCounters.reuseNonLeafChecks.Add(1)
+}
+
+func perfRecordReuseNonLeafSuccess(bytes uint32) {
+	perfCounters.reuseNonLeafSuccesses.Add(1)
+	if bytes > 0 {
+		perfCounters.reuseNonLeafBytes.Add(uint64(bytes))
+	}
+}
+
+func perfRecordReuseNonLeafNoGoto() {
+	perfCounters.reuseNonLeafNoGoto.Add(1)
+}
+
+func perfRecordReuseNonLeafStateMiss() {
+	perfCounters.reuseNonLeafStateMiss.Add(1)
+}
+
+func perfRecordReuseNonLeafStateZero() {
+	perfCounters.reuseNonLeafStateZero.Add(1)
 }
 
 func perfMergeHistBin(n int) int {
