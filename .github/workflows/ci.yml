@@ -33,3 +33,78 @@ jobs:
         with:
           name: parity-log
           path: parity.log
+
+  parity-cgo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: CGo Parity Gate (Go/Python/TSX + Issue Repros)
+        run: |
+          cd cgo_harness
+          GTS_PARITY_COMPARE_FIELDS=1 \
+          go test . -tags treesitter_c_parity \
+            -run 'TestParityFreshParse/(go|python|tsx)$|TestParityHasNoErrors/(go|python|tsx)$|TestParityIssue3Repros' \
+            -count=1 -v
+
+  perf-regression:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Benchmark Base vs Head
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          BENCH_RE='^(BenchmarkGoParseFullDFA|BenchmarkGoParseIncrementalSingleByteEditDFA|BenchmarkGoParseIncrementalNoEditDFA)$'
+          OUT_DIR="${RUNNER_TEMP}/bench-gate"
+          BASE_TREE="${RUNNER_TEMP}/bench-base"
+          mkdir -p "${OUT_DIR}"
+
+          git fetch --no-tags origin "${BASE_SHA}"
+          git worktree add "${BASE_TREE}" "${BASE_SHA}"
+          trap 'git worktree remove --force "${BASE_TREE}"' EXIT
+
+          export GOMAXPROCS=1
+          (cd "${BASE_TREE}" && go test -run '^$' -bench "${BENCH_RE}" -benchmem -count=10 -benchtime=750ms .) > "${OUT_DIR}/base.txt"
+          go test -run '^$' -bench "${BENCH_RE}" -benchmem -count=10 -benchtime=750ms . > "${OUT_DIR}/head.txt"
+
+          (
+            cd "${BASE_TREE}" && \
+            GOT_BENCH_FUNC_COUNT=5000 /usr/bin/time -v \
+            go test -run '^$' -bench '^BenchmarkGoParseFullDFA$' -benchmem -count=1 -benchtime=3x . \
+            > "${OUT_DIR}/base_rss_bench.txt" 2> "${OUT_DIR}/base_rss_time.txt"
+          )
+          GOT_BENCH_FUNC_COUNT=5000 /usr/bin/time -v \
+            go test -run '^$' -bench '^BenchmarkGoParseFullDFA$' -benchmem -count=1 -benchtime=3x . \
+            > "${OUT_DIR}/head_rss_bench.txt" 2> "${OUT_DIR}/head_rss_time.txt"
+
+          go run ./cmd/benchgate \
+            -base "${OUT_DIR}/base.txt" \
+            -head "${OUT_DIR}/head.txt" \
+            -base-rss "${OUT_DIR}/base_rss_time.txt" \
+            -head-rss "${OUT_DIR}/head_rss_time.txt" \
+            -max-ns-regression 0.08 \
+            -max-bytes-regression 0.05 \
+            -max-allocs-regression 0.05 \
+            -max-rss-regression 0.10
+
+      - name: Upload Perf Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-gate-artifacts
+          path: ${{ runner.temp }}/bench-gate
