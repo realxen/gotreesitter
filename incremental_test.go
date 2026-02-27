@@ -471,3 +471,80 @@ func TestReuseTargetStateAmbiguousShiftMustMatchNodeState(t *testing.T) {
 		t.Fatal("expected reuseTargetState to reject ambiguous shift when node parseState does not match any action")
 	}
 }
+
+func TestReuseStackDepthForPreGoto(t *testing.T) {
+	entries := []stackEntry{
+		{state: 1, node: nil},
+		{state: 10, node: &Node{endByte: 4}},
+		{state: 20, node: &Node{endByte: 8}},
+		{state: 10, node: &Node{endByte: 12}},
+	}
+	if got := reuseStackDepthForPreGoto(entries, 8, 10); got != 2 {
+		t.Fatalf("depth at start=8/pre=10 = %d, want 2", got)
+	}
+	if got := reuseStackDepthForPreGoto(entries, 12, 10); got != 4 {
+		t.Fatalf("depth at start=12/pre=10 = %d, want 4", got)
+	}
+	if got := reuseStackDepthForPreGoto(entries, 8, 99); got != 0 {
+		t.Fatalf("depth at missing state = %d, want 0", got)
+	}
+}
+
+func TestReuseNonLeafTargetStateOnStackUsesPreGoto(t *testing.T) {
+	lang := buildArithmeticLanguage()
+	parser := NewParser(lang)
+	tree := mustParse(t, parser, []byte("1+2+3"))
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+
+	var target *Node
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil || target != nil {
+			return
+		}
+		if n.ChildCount() > 0 {
+			target = n
+			return
+		}
+		for _, c := range n.Children() {
+			walk(c)
+		}
+	}
+	walk(root)
+	if target == nil {
+		t.Fatal("expected non-leaf candidate")
+	}
+	start := target.StartByte()
+	pre := target.PreGotoState()
+
+	stackWithPre := glrStack{
+		entries: []stackEntry{
+			{state: lang.InitialState},
+			{state: pre, node: &Node{endByte: start}},
+			{state: pre + 1, node: &Node{endByte: start}},
+		},
+	}
+	nextState, depth, ok := parser.reuseNonLeafTargetStateOnStack(&stackWithPre, target, start, nil)
+	if !ok {
+		t.Fatal("expected non-leaf stack-context match success")
+	}
+	if depth != 2 {
+		t.Fatalf("truncate depth = %d, want 2", depth)
+	}
+	if nextState == 0 {
+		t.Fatal("expected non-zero goto state for matched pre-goto state")
+	}
+
+	stackMissingPre := glrStack{
+		entries: []stackEntry{
+			{state: pre + 1, node: &Node{endByte: start}},
+			{state: pre + 2, node: &Node{endByte: start}},
+		},
+	}
+	if _, _, ok := parser.reuseNonLeafTargetStateOnStack(&stackMissingPre, target, start, nil); ok {
+		t.Fatal("expected failure when stack does not contain candidate pre-goto state")
+	}
+}

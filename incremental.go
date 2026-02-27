@@ -227,9 +227,14 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 		if span == 0 || span > maxNonLeafReuseSpan {
 			continue
 		}
-		nextState, ok := p.reuseTargetState(state, n, lookahead)
+		nextState, truncateDepth, ok := p.reuseNonLeafTargetStateOnStack(s, n, lookahead.StartByte, entryScratch)
 		if !ok {
 			continue
+		}
+		if truncateDepth > 0 && truncateDepth < s.depth() {
+			if !s.truncate(truncateDepth) {
+				continue
+			}
 		}
 		return reuseNode(p, s, n, nextState, lookahead, ts, idx, entryScratch, gssScratch)
 	}
@@ -240,6 +245,11 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 func reuseNode(p *Parser, s *glrStack, n *Node, nextState StateID, lookahead Token, ts TokenSource, idx *reuseCursor, entryScratch *glrEntryScratch, gssScratch *gssScratch) (Token, uint32, bool) {
 	if perfCountersEnabled {
 		perfRecordReuseSuccess()
+		if n.ChildCount() == 0 {
+			perfRecordReuseLeafSuccess()
+		} else {
+			perfRecordReuseNonLeafSuccess(n.EndByte() - n.StartByte())
+		}
 	}
 	p.pushStackNode(s, nextState, n, entryScratch, gssScratch)
 	reusedBytes := n.EndByte() - n.StartByte()
@@ -322,9 +332,85 @@ func (p *Parser) reuseTargetState(state StateID, n *Node, lookahead Token) (Stat
 		return 0, false
 	}
 
+	if perfCountersEnabled {
+		perfRecordReuseNonLeafCheck()
+	}
 	gotoState := p.lookupGoto(state, n.Symbol())
 	if gotoState == 0 {
+		if perfCountersEnabled {
+			perfRecordReuseNonLeafNoGoto()
+			if p.language != nil && int(n.Symbol()) < int(p.language.TokenCount) {
+				perfRecordReuseNonLeafNoGotoTerminal()
+			} else {
+				perfRecordReuseNonLeafNoGotoNonTerminal()
+			}
+		}
 		return 0, false
 	}
+	if n.parseState == 0 {
+		if perfCountersEnabled {
+			perfRecordReuseNonLeafStateZero()
+		}
+	}
 	return gotoState, true
+}
+
+func reuseStackDepthForPreGoto(entries []stackEntry, startByte uint32, preGoto StateID) int {
+	if len(entries) == 0 {
+		return 0
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].state != preGoto {
+			continue
+		}
+		frontier := uint32(0)
+		if n := entries[i].node; n != nil {
+			frontier = n.endByte
+		}
+		if frontier <= startByte {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func (p *Parser) reuseNonLeafTargetStateOnStack(s *glrStack, n *Node, startByte uint32, entryScratch *glrEntryScratch) (StateID, int, bool) {
+	if s == nil || n == nil || n.ChildCount() == 0 {
+		return 0, 0, false
+	}
+	if perfCountersEnabled {
+		perfRecordReuseNonLeafCheck()
+	}
+
+	preGoto := n.PreGotoState()
+
+	gotoState := p.lookupGoto(preGoto, n.Symbol())
+	if gotoState == 0 {
+		if perfCountersEnabled {
+			perfRecordReuseNonLeafNoGoto()
+			if p.language != nil && int(n.Symbol()) < int(p.language.TokenCount) {
+				perfRecordReuseNonLeafNoGotoTerminal()
+			} else {
+				perfRecordReuseNonLeafNoGotoNonTerminal()
+			}
+		}
+		return 0, 0, false
+	}
+	if n.parseState != 0 && gotoState != n.parseState {
+		if perfCountersEnabled {
+			perfRecordReuseNonLeafStateMiss()
+		}
+		return 0, 0, false
+	}
+
+	entries := s.ensureEntries(entryScratch)
+	depth := reuseStackDepthForPreGoto(entries, startByte, preGoto)
+	if depth == 0 {
+		if perfCountersEnabled {
+			perfRecordReuseNonLeafStateMiss()
+		}
+		return 0, 0, false
+	}
+
+	return gotoState, depth, true
 }

@@ -1746,6 +1746,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				leaf := newLeafNodeInArena(arena, tok.Symbol, named,
 					tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 				leaf.isExtra = true
+				leaf.preGotoState = currentState
 				leaf.parseState = currentState
 				p.pushStackNode(s, currentState, leaf, &scratch.entries, &scratch.gss)
 				nodeCount++
@@ -1912,6 +1913,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		leaf := newLeafNodeInArena(arena, tok.Symbol, named,
 			tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 		leaf.isExtra = act.Extra
+		leaf.preGotoState = s.top().state
 		leaf.parseState = act.State
 		p.pushStackNode(s, act.State, leaf, entryScratch, gssScratch)
 		s.shifted = true
@@ -2078,6 +2080,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduc
 	if gotoState != 0 {
 		targetState = gotoState
 	}
+	parent.preGotoState = topState
 	parent.parseState = targetState
 	p.pushStackNode(s, targetState, parent, entryScratch, gssScratch)
 	for i := range trailingExtras {
@@ -2331,6 +2334,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 	if gotoState != 0 {
 		targetState = gotoState
 	}
+	parent.preGotoState = window.topState
 	parent.parseState = targetState
 	p.pushStackNode(s, targetState, parent, entryScratch, gssScratch)
 	for i := range trailingExtras {

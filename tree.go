@@ -17,6 +17,7 @@ type Range struct {
 type Node struct {
 	symbol       Symbol
 	parseState   StateID // parser state after this node was pushed
+	preGotoState StateID // parser state before goto (state exposed after popping children)
 	startByte    uint32
 	endByte      uint32
 	startPoint   Point
@@ -39,6 +40,11 @@ func (n *Node) Symbol() Symbol { return n.symbol }
 
 // ParseState returns the parser state associated with this node.
 func (n *Node) ParseState() StateID { return n.parseState }
+
+// PreGotoState returns the parser state that was on top of the stack before
+// this node was pushed (i.e., the state exposed after popping children during
+// reduce). For non-leaf nodes: lookupGoto(PreGotoState, Symbol) == ParseState.
+func (n *Node) PreGotoState() StateID { return n.preGotoState }
 
 // IsNamed reports whether this is a named node (as opposed to anonymous syntax like punctuation).
 func (n *Node) IsNamed() bool { return n.isNamed }
