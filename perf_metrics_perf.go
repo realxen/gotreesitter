@@ -19,6 +19,9 @@ type perfCountersData struct {
 	stackEquivalentTrue    atomic.Uint64
 	stackEqHashMissSkips   atomic.Uint64
 	stackCompareCalls      atomic.Uint64
+	conflictRR             atomic.Uint64
+	conflictRS             atomic.Uint64
+	conflictOther          atomic.Uint64
 	forkCount              atomic.Uint64
 	firstConflictToken     atomic.Uint64
 	maxConcurrentStacks    atomic.Uint64
@@ -41,6 +44,11 @@ type perfCountersData struct {
 	mergeHashZero          atomic.Uint64
 	globalCapCulls         atomic.Uint64
 	globalCapCullDropped   atomic.Uint64
+	reduceChainSteps       atomic.Uint64
+	reduceChainMaxLen      atomic.Uint64
+	reduceChainBreakMulti  atomic.Uint64
+	reduceChainBreakShift  atomic.Uint64
+	reduceChainBreakAccept atomic.Uint64
 	parentChildPointers    atomic.Uint64
 	extraNodes             atomic.Uint64
 	errorNodes             atomic.Uint64
@@ -61,6 +69,9 @@ type PerfCounters struct {
 	StackEquivalentTrue    uint64
 	StackEqHashMissSkips   uint64
 	StackCompareCalls      uint64
+	ConflictRR             uint64
+	ConflictRS             uint64
+	ConflictOther          uint64
 	ForkCount              uint64
 	FirstConflictToken     uint64
 	MaxConcurrentStacks    uint64
@@ -83,6 +94,11 @@ type PerfCounters struct {
 	MergeHashZero          uint64
 	GlobalCapCulls         uint64
 	GlobalCapCullDropped   uint64
+	ReduceChainSteps       uint64
+	ReduceChainMaxLen      uint64
+	ReduceChainBreakMulti  uint64
+	ReduceChainBreakShift  uint64
+	ReduceChainBreakAccept uint64
 	ParentChildPointers    uint64
 	ExtraNodes             uint64
 	ErrorNodes             uint64
@@ -101,6 +117,9 @@ func ResetPerfCounters() {
 	perfCounters.stackEquivalentTrue.Store(0)
 	perfCounters.stackEqHashMissSkips.Store(0)
 	perfCounters.stackCompareCalls.Store(0)
+	perfCounters.conflictRR.Store(0)
+	perfCounters.conflictRS.Store(0)
+	perfCounters.conflictOther.Store(0)
 	perfCounters.forkCount.Store(0)
 	perfCounters.firstConflictToken.Store(0)
 	perfCounters.maxConcurrentStacks.Store(0)
@@ -132,6 +151,11 @@ func ResetPerfCounters() {
 	perfCounters.mergeHashZero.Store(0)
 	perfCounters.globalCapCulls.Store(0)
 	perfCounters.globalCapCullDropped.Store(0)
+	perfCounters.reduceChainSteps.Store(0)
+	perfCounters.reduceChainMaxLen.Store(0)
+	perfCounters.reduceChainBreakMulti.Store(0)
+	perfCounters.reduceChainBreakShift.Store(0)
+	perfCounters.reduceChainBreakAccept.Store(0)
 	for i := range perfCounters.mergeOutHist {
 		perfCounters.mergeOutHist[i].Store(0)
 	}
@@ -150,6 +174,9 @@ func PerfCountersSnapshot() PerfCounters {
 	out.StackEquivalentTrue = perfCounters.stackEquivalentTrue.Load()
 	out.StackEqHashMissSkips = perfCounters.stackEqHashMissSkips.Load()
 	out.StackCompareCalls = perfCounters.stackCompareCalls.Load()
+	out.ConflictRR = perfCounters.conflictRR.Load()
+	out.ConflictRS = perfCounters.conflictRS.Load()
+	out.ConflictOther = perfCounters.conflictOther.Load()
 	out.ForkCount = perfCounters.forkCount.Load()
 	out.FirstConflictToken = perfCounters.firstConflictToken.Load()
 	out.MaxConcurrentStacks = perfCounters.maxConcurrentStacks.Load()
@@ -178,6 +205,11 @@ func PerfCountersSnapshot() PerfCounters {
 	out.MergeHashZero = perfCounters.mergeHashZero.Load()
 	out.GlobalCapCulls = perfCounters.globalCapCulls.Load()
 	out.GlobalCapCullDropped = perfCounters.globalCapCullDropped.Load()
+	out.ReduceChainSteps = perfCounters.reduceChainSteps.Load()
+	out.ReduceChainMaxLen = perfCounters.reduceChainMaxLen.Load()
+	out.ReduceChainBreakMulti = perfCounters.reduceChainBreakMulti.Load()
+	out.ReduceChainBreakShift = perfCounters.reduceChainBreakShift.Load()
+	out.ReduceChainBreakAccept = perfCounters.reduceChainBreakAccept.Load()
 	out.ParentChildPointers = perfCounters.parentChildPointers.Load()
 	out.ExtraNodes = perfCounters.extraNodes.Load()
 	out.ErrorNodes = perfCounters.errorNodes.Load()
@@ -239,6 +271,18 @@ func perfRecordStackEquivalentHashMissSkip() {
 
 func perfRecordStackCompare() {
 	perfCounters.stackCompareCalls.Add(1)
+}
+
+func perfRecordConflictRR() {
+	perfCounters.conflictRR.Add(1)
+}
+
+func perfRecordConflictRS() {
+	perfCounters.conflictRS.Add(1)
+}
+
+func perfRecordConflictOther() {
+	perfCounters.conflictOther.Add(1)
 }
 
 func perfRecordFork(actionCount int, tokenPos uint64) {
@@ -332,6 +376,35 @@ func perfRecordReuseNonLeafStateMiss() {
 
 func perfRecordReuseNonLeafStateZero() {
 	perfCounters.reuseNonLeafStateZero.Add(1)
+}
+
+func perfRecordReduceChainStep(chainLen int) {
+	perfCounters.reduceChainSteps.Add(1)
+	if chainLen <= 0 {
+		return
+	}
+	target := uint64(chainLen)
+	for {
+		prev := perfCounters.reduceChainMaxLen.Load()
+		if target <= prev {
+			return
+		}
+		if perfCounters.reduceChainMaxLen.CompareAndSwap(prev, target) {
+			return
+		}
+	}
+}
+
+func perfRecordReduceChainBreakMulti() {
+	perfCounters.reduceChainBreakMulti.Add(1)
+}
+
+func perfRecordReduceChainBreakShift() {
+	perfCounters.reduceChainBreakShift.Add(1)
+}
+
+func perfRecordReduceChainBreakAccept() {
+	perfCounters.reduceChainBreakAccept.Add(1)
 }
 
 func perfRecordParentChildren(count int) {

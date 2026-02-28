@@ -1995,8 +1995,19 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			// For single-action entries (the common case), no fork occurs.
 			// For multi-action entries, clone the stack for each alternative.
 			if len(actions) > 1 {
+				if perfCountersEnabled {
+					rrConflict, rsConflict := classifyConflictShape(actions)
+					switch {
+					case rrConflict:
+						perfRecordConflictRR()
+					case rsConflict:
+						perfRecordConflictRS()
+					default:
+						perfRecordConflictOther()
+					}
+				}
 				if reuse != nil {
-					p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyActionWithReduceChain(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
 					continue
 				}
 				if perfCountersEnabled {
@@ -2007,7 +2018,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// to keep parsing bounded.
 				const maxForkCloneDepth = 4 * 1024
 				if s.depth() > maxForkCloneDepth {
-					p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyActionWithReduceChain(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
 					continue
 				}
 				// Copy the current stack value before appending forks.
@@ -2015,14 +2026,14 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				base := *s
 				for ai := 1; ai < len(actions); ai++ {
 					fork := base.cloneWithScratch(&scratch.gss)
-					p.applyAction(&fork, actions[ai], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+					p.applyActionWithReduceChain(&fork, actions[ai], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
 					stacks = append(stacks, fork)
 				}
 				// Re-acquire the pointer after possible reallocation.
 				s = &stacks[si]
-				p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+				p.applyActionWithReduceChain(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
 			} else {
-				p.applyAction(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
+				p.applyActionWithReduceChain(s, actions[0], tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries)
 			}
 		}
 
@@ -2088,6 +2099,92 @@ func (p *Parser) promotePrimaryStack(stacks []glrStack) {
 	}
 	if best != 0 {
 		stacks[0], stacks[best] = stacks[best], stacks[0]
+	}
+}
+
+func classifyConflictShape(actions []ParseAction) (rrConflict, rsConflict bool) {
+	if len(actions) < 2 {
+		return false, false
+	}
+	reduceCount := 0
+	hasShift := false
+	hasOther := false
+	for i := range actions {
+		switch actions[i].Type {
+		case ParseActionReduce:
+			reduceCount++
+		case ParseActionShift:
+			hasShift = true
+		default:
+			hasOther = true
+		}
+	}
+	if hasOther || reduceCount == 0 {
+		return false, false
+	}
+	if hasShift {
+		return false, true
+	}
+	return reduceCount >= 2, false
+}
+
+func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry) {
+	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries)
+	if act.Type != ParseActionReduce || s == nil || s.dead || s.accepted || s.shifted {
+		return
+	}
+	p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries)
+}
+
+func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry) {
+	if s == nil || s.dead || s.accepted || s.shifted {
+		return
+	}
+	const maxInlineReduceChain = 256
+	parseActions := p.language.ParseActions
+	chainLen := 0
+	for chainLen < maxInlineReduceChain {
+		currentState := s.top().state
+		actionIdx := p.lookupActionIndex(currentState, tok.Symbol)
+		if actionIdx == 0 || int(actionIdx) >= len(parseActions) {
+			return
+		}
+
+		actions := parseActions[actionIdx].Actions
+		if len(actions) != 1 {
+			if perfCountersEnabled {
+				perfRecordReduceChainBreakMulti()
+			}
+			return
+		}
+
+		next := actions[0]
+		switch next.Type {
+		case ParseActionReduce:
+			chainLen++
+			if perfCountersEnabled {
+				perfRecordReduceChainStep(chainLen)
+			}
+			p.applyAction(s, next, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries)
+			if s.dead || s.accepted || s.shifted {
+				return
+			}
+		case ParseActionShift:
+			if perfCountersEnabled {
+				perfRecordReduceChainBreakShift()
+			}
+			return
+		case ParseActionAccept:
+			if perfCountersEnabled {
+				perfRecordReduceChainBreakAccept()
+			}
+			return
+		default:
+			if perfCountersEnabled {
+				perfRecordReduceChainBreakMulti()
+			}
+			return
+		}
 	}
 }
 

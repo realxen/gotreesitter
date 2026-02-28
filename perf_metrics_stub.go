@@ -13,6 +13,9 @@ type PerfCounters struct {
 	StackEquivalentTrue    uint64
 	StackEqHashMissSkips   uint64
 	StackCompareCalls      uint64
+	ConflictRR             uint64
+	ConflictRS             uint64
+	ConflictOther          uint64
 	ForkCount              uint64
 	FirstConflictToken     uint64
 	MaxConcurrentStacks    uint64
@@ -35,6 +38,11 @@ type PerfCounters struct {
 	MergeHashZero          uint64
 	GlobalCapCulls         uint64
 	GlobalCapCullDropped   uint64
+	ReduceChainSteps       uint64
+	ReduceChainMaxLen      uint64
+	ReduceChainBreakMulti  uint64
+	ReduceChainBreakShift  uint64
+	ReduceChainBreakAccept uint64
 	ParentChildPointers    uint64
 	ExtraNodes             uint64
 	ErrorNodes             uint64
@@ -58,6 +66,9 @@ func perfRecordStackEquivalentCall()           {}
 func perfRecordStackEquivalentTrue()           {}
 func perfRecordStackEquivalentHashMissSkip()   {}
 func perfRecordStackCompare()                  {}
+func perfRecordConflictRR()                    {}
+func perfRecordConflictRS()                    {}
+func perfRecordConflictOther()                 {}
 func perfRecordFork(int, uint64)               {}
 func perfRecordMaxConcurrentStacks(int)        {}
 func perfRecordLexed(int, int)                 {}
@@ -74,6 +85,10 @@ func perfRecordReuseNonLeafNoGotoTerminal()    {}
 func perfRecordReuseNonLeafNoGotoNonTerminal() {}
 func perfRecordReuseNonLeafStateMiss()         {}
 func perfRecordReuseNonLeafStateZero()         {}
+func perfRecordReduceChainStep(int)            {}
+func perfRecordReduceChainBreakMulti()         {}
+func perfRecordReduceChainBreakShift()         {}
+func perfRecordReduceChainBreakAccept()        {}
 func perfRecordParentChildren(int)             {}
 func perfRecordExtraNode()                     {}
 func perfRecordErrorNode()                     {}

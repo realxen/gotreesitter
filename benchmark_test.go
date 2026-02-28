@@ -208,6 +208,10 @@ func BenchmarkGoParseFullDFA(b *testing.B) {
 			p.MergeHashZero, p.GlobalCapCulls, p.GlobalCapCullDropped,
 		)
 		fmt.Printf(
+			"STATS_PERF conflicts_rr=%d conflicts_rs=%d conflicts_other=%d reduce_chain_steps=%d reduce_chain_max_len=%d reduce_chain_break_multi=%d reduce_chain_break_shift=%d reduce_chain_break_accept=%d\n",
+			p.ConflictRR, p.ConflictRS, p.ConflictOther, p.ReduceChainSteps, p.ReduceChainMaxLen, p.ReduceChainBreakMulti, p.ReduceChainBreakShift, p.ReduceChainBreakAccept,
+		)
+		fmt.Printf(
 			"STATS_PERF merge_in_hist=%s merge_alive_hist=%s merge_out_hist=%s fork_actions_hist=%s\n",
 			nonZeroBins(p.MergeStacksInHist[:]), nonZeroBins(p.MergeAliveHist[:]), nonZeroBins(p.MergeOutHist[:]), nonZeroBins(p.ForkActionsHist[:]),
 		)
@@ -410,6 +414,10 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 		fmt.Printf(
 			"STATS_PERF merge_hash_zero=%d global_cap_culls=%d global_cap_cull_dropped=%d\n",
 			p.MergeHashZero, p.GlobalCapCulls, p.GlobalCapCullDropped,
+		)
+		fmt.Printf(
+			"STATS_PERF conflicts_rr=%d conflicts_rs=%d conflicts_other=%d reduce_chain_steps=%d reduce_chain_max_len=%d reduce_chain_break_multi=%d reduce_chain_break_shift=%d reduce_chain_break_accept=%d\n",
+			p.ConflictRR, p.ConflictRS, p.ConflictOther, p.ReduceChainSteps, p.ReduceChainMaxLen, p.ReduceChainBreakMulti, p.ReduceChainBreakShift, p.ReduceChainBreakAccept,
 		)
 		fmt.Printf(
 			"STATS_PERF merge_in_hist=%s merge_alive_hist=%s merge_out_hist=%s fork_actions_hist=%s\n",
