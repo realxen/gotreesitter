@@ -66,6 +66,7 @@ type glrMergeSlot struct {
 	key        glrMergeKey
 	indices    [maxStacksPerMergeKey]int
 	hashes     [maxStacksPerMergeKey]uint64
+	hashMask   uint64
 	count      int
 	worstIndex int
 }
@@ -617,24 +618,27 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			slots[slotIndex].key = key
 			slots[slotIndex].count = 0
 			slots[slotIndex].worstIndex = -1
+			slots[slotIndex].hashMask = 0
 		}
 		slot := &slots[slotIndex]
 
 		duplicateIndex := -1
-		compared := false
-		for j := 0; j < slot.count; j++ {
-			if slot.hashes[j] != hash {
-				continue
-			}
-			compared = true
-			idx := slot.indices[j]
-			existing := &result[idx]
-			if stackEquivalent(*existing, stack) {
-				duplicateIndex = idx
-				break
+		hashMatched := false
+		if slot.count > 0 && (slot.hashMask&mergeHashBit(hash)) != 0 {
+			for j := 0; j < slot.count; j++ {
+				if slot.hashes[j] != hash {
+					continue
+				}
+				hashMatched = true
+				idx := slot.indices[j]
+				existing := &result[idx]
+				if stackEquivalent(*existing, stack) {
+					duplicateIndex = idx
+					break
+				}
 			}
 		}
-		if !compared && slot.count > 0 && perfCountersEnabled {
+		if !hashMatched && slot.count > 0 && perfCountersEnabled {
 			perfRecordStackEquivalentHashMissSkip()
 		}
 		if duplicateIndex >= 0 {
@@ -658,6 +662,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			result = append(result, stack)
 			slot.indices[slot.count] = idx
 			slot.hashes[slot.count] = hash
+			slot.hashMask |= mergeHashBit(hash)
 			slot.count++
 			if slot.worstIndex < 0 || stackCompareMerge(&result[idx], &result[slot.worstIndex]) < 0 {
 				slot.worstIndex = idx
@@ -691,6 +696,7 @@ func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrSt
 			result[slot.worstIndex] = stack
 			if replacedSlot >= 0 {
 				slot.hashes[replacedSlot] = hash
+				slot.hashMask = recomputeMergeSlotHashMask(slot)
 			}
 			slot.worstIndex = recomputeMergeSlotWorst(slot, result)
 		}
@@ -715,6 +721,21 @@ func recomputeMergeSlotWorst(slot *glrMergeSlot, result []glrStack) int {
 		}
 	}
 	return worst
+}
+
+func mergeHashBit(hash uint64) uint64 {
+	return uint64(1) << (hash & 63)
+}
+
+func recomputeMergeSlotHashMask(slot *glrMergeSlot) uint64 {
+	if slot == nil || slot.count == 0 {
+		return 0
+	}
+	mask := uint64(0)
+	for j := 0; j < slot.count; j++ {
+		mask |= mergeHashBit(slot.hashes[j])
+	}
+	return mask
 }
 
 func ensureMergeResultCap(scratch *glrMergeScratch, n int) []glrStack {
