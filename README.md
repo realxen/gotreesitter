@@ -63,6 +63,70 @@ for {
 
 The query engine supports the full S-expression pattern language: structural quantifiers (`?`, `*`, `+`), alternation (`[...]`), field constraints, negated fields, anchor (`!`), and all standard predicates. See [Query API](#query-api).
 
+### Typed query codegen
+
+Generate type-safe Go wrappers from `.scm` query files:
+
+```sh
+go run ./cmd/tsquery -input queries/go_functions.scm -lang go -output go_functions_query.go -package queries
+```
+
+Given a query like `(function_declaration name: (identifier) @name body: (block) @body)`, `tsquery` generates:
+
+```go
+type FunctionDeclarationMatch struct {
+    Name *gotreesitter.Node
+    Body *gotreesitter.Node
+}
+
+q, _ := queries.NewGoFunctionsQuery(lang)
+cursor := q.Exec(tree.RootNode(), lang, src)
+for {
+    match, ok := cursor.Next()
+    if !ok { break }
+    fmt.Println(match.Name.Text(src))
+}
+```
+
+Multi-pattern queries generate one struct per pattern with `MatchPatternN` conversion helpers.
+
+### Multi-language documents (injection parsing)
+
+Parse documents with embedded languages (HTML+JS+CSS, Markdown+code fences, Vue/Svelte templates):
+
+```go
+ip := gotreesitter.NewInjectionParser()
+ip.RegisterLanguage("html", htmlLang)
+ip.RegisterLanguage("javascript", jsLang)
+ip.RegisterLanguage("css", cssLang)
+ip.RegisterInjectionQuery("html", injectionQuery)
+
+result, _ := ip.Parse(source, "html")
+
+for _, inj := range result.Injections {
+    fmt.Printf("%s: %d ranges\n", inj.Language, len(inj.Ranges))
+    // inj.Tree is the child language's parse tree
+}
+```
+
+Supports static (`#set! injection.language "javascript"`) and dynamic (`@injection.language` capture) language detection, recursive nested injections, and incremental reparse with child tree reuse.
+
+### Source rewriting
+
+Collect source-level edits and apply atomically, producing `InputEdit` records for incremental reparse:
+
+```go
+rw := gotreesitter.NewRewriter(src)
+rw.Replace(funcNameNode, []byte("newName"))
+rw.InsertBefore(bodyNode, []byte("// added\n"))
+rw.Delete(unusedNode)
+
+newSrc, _ := rw.ApplyToTree(tree)
+newTree, _ := parser.ParseIncremental(newSrc, tree)
+```
+
+`Apply()` returns both the new source bytes and the `[]InputEdit` records. `ApplyToTree()` is a convenience that calls `tree.Edit()` for each edit and returns source ready for `ParseIncremental`.
+
 ### Incremental reparsing
 
 ```go
@@ -211,10 +275,10 @@ Emits `bench_out/matrix.json` (machine-readable), `bench_out/matrix.md` (summary
 
 ## Supported languages
 
-209 grammars ship in the registry. 203 produce error-free parse trees on their smoke samples; 6 are degraded. Run `go run ./cmd/parity_report` for current status.
+209 grammars ship in the registry. 208 produce error-free parse trees on their smoke samples; 1 is degraded (`norg`). Run `go run ./cmd/parity_report` for current status.
 
-- 112 hand-written Go external scanners (Python indentation, HTML tag matching, Rust raw strings, etc.)
-- 9 hand-written Go token sources (authzed, c, go, html, java, json, lua, toml, yaml)
+- 14 hand-written (😉) Go external scanners (python, elixir, comment, doxygen, foam, nginx, nushell, r, xml, yuck, purescript, typst, html, yaml)
+- 8 hand-written Go token sources (authzed, c, go, html, java, json, lua, toml)
 - Remaining languages use the DFA lexer generated from grammar tables
 
 ### Parse quality
@@ -252,7 +316,12 @@ Each `LangEntry` carries a `Quality` field:
 | `#has-ancestor?` / `#not-has-ancestor?` | supported |
 | `#not-has-parent?` | supported |
 | `#is?` / `#is-not?` | supported |
+| `#any-eq?` / `#any-not-eq?` | supported |
+| `#any-match?` / `#any-not-match?` | supported |
+| `#select-adjacent!` | supported |
+| `#strip!` | supported |
 | `#set!` / `#offset!` directives | parsed and accepted |
+| `SetValues` (read `#set!` metadata from matches) | supported |
 
 All shipped highlight and tags queries compile (`156/156` highlight, `69/69` tags).
 
@@ -260,7 +329,7 @@ All shipped highlight and tags queries compile (`156/156` highlight, `69/69` tag
 
 - **Full-parse throughput**: ~11x slower than the C runtime on the Go grammar benchmark. The GLR parse loop, Go bounds checking, interface dispatch, and GC write barriers account for the gap. Incremental reparsing amortizes this for interactive use.
 - **GLR safety caps**: The parser enforces iteration, stack depth, and node count limits proportional to input size. These prevent pathological blowup on grammars with high ambiguity but impose a ceiling on the maximum input complexity that parses without error. The caps are tunable but not removable without risking unbounded resource consumption.
-- **Degraded grammars**: 6 of 209 grammars produce syntax errors on smoke samples: `norg` (external scanner with 122 token types, not yet ported), `caddy`, `cobol`, `hcl`, `properties`, `vimdoc` (DFA lexer limitations). Check `entry.Quality` and `tree.RootNode().HasError()`.
+- **Degraded grammars**: 1 of 209 grammars is degraded: `norg` (external scanner with 122 token types, C++ scanner not yet ported). Check `entry.Quality` and `tree.RootNode().HasError()`.
 
 ## Adding a language
 
@@ -283,7 +352,11 @@ gotreesitter is a ground-up reimplementation of the tree-sitter runtime in Go. N
 
 **Arena allocator** — Nodes are allocated from slab-based arenas to reduce GC pressure. Arenas are released in bulk when a tree is freed.
 
-**Query engine** — S-expression pattern compiler with predicate evaluation and streaming cursor iteration. Supports all standard tree-sitter predicates (`#eq?`, `#match?`, `#any-of?`, `#has-ancestor?`, etc.) and directive annotations (`#set!`, `#offset!`).
+**Query engine** — S-expression pattern compiler with predicate evaluation and streaming cursor iteration. Supports all standard tree-sitter predicates (`#eq?`, `#match?`, `#any-of?`, `#has-ancestor?`, etc.) and directive annotations (`#set!`, `#offset!`, `#select-adjacent!`, `#strip!`).
+
+**Injection parser** — Orchestrates multi-language parsing. Runs injection queries against a parent tree to find embedded regions, spawns child parsers with `SetIncludedRanges()`, and recurses for nested injections. Incremental reparse reuses unchanged child trees.
+
+**Rewriter** — Collects source-level edits (replace, insert, delete) targeting byte ranges, applies them atomically, and produces `InputEdit` records for incremental reparse. Edits are validated for non-overlap and applied in a single pass.
 
 **Grammar loading** — `ts2go` extracts parse tables, lex tables, field maps, symbol metadata, and external token lists from upstream `parser.c` files. These are serialized to compressed binary blobs under `grammars/grammar_blobs/` and lazy-loaded via `loadEmbeddedLanguage()` with an LRU cache. String and transition interning reduce memory footprint across loaded grammars.
 
@@ -327,17 +400,16 @@ GOTREESITTER_GRAMMAR_TRANSITION_INTERN_LIMIT=20000
 go test ./... -race -count=1
 ```
 
-Test suite covers: smoke tests (209 grammars), golden S-expression snapshots, highlight query validation, query pattern matching, incremental reparse correctness, error recovery, GLR fork/merge, and fuzz targets.
+Test suite covers: smoke tests (209 grammars), golden S-expression snapshots, highlight query validation, query pattern matching, incremental reparse correctness, error recovery, GLR fork/merge, injection parsing, source rewriting, and fuzz targets.
 
 ## Roadmap
 
-v0.5.0 — 209 grammars, GLR parser, incremental reparsing, query engine, tree cursor, highlighting, tagging.
+v0.5.0 — 209 grammars, GLR parser, incremental reparsing, query engine, tree cursor, highlighting, tagging, ABI 15 support, injection parser, typed query codegen, CST rewriter.
 
 Next:
 - Corpus parity testing against C tree-sitter reference output
 - GLR ambiguity overhead reduction for large files
-- Query parity hardening (field-negation semantics, metadata directives)
-- External scanners for remaining degraded grammars
+- Port norg external scanner
 - Fuzz coverage expansion
 
 ## License
