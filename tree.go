@@ -504,6 +504,9 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 	if arena == nil {
 		return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 	}
+	if perfCountersEnabled {
+		perfRecordParentChildren(len(children))
+	}
 	n := arena.allocNodeFast()
 	n.ownerArena = arena
 	n.symbol = sym

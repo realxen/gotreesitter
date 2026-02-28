@@ -35,6 +35,9 @@ type PerfCounters struct {
 	MergeHashZero          uint64
 	GlobalCapCulls         uint64
 	GlobalCapCullDropped   uint64
+	ParentChildPointers    uint64
+	ExtraNodes             uint64
+	ErrorNodes             uint64
 	MergeStacksInHist      [maxGLRStacks + 2]uint64
 	MergeAliveHist         [maxGLRStacks + 2]uint64
 	MergeOutHist           [maxGLRStacks + 2]uint64
@@ -71,3 +74,6 @@ func perfRecordReuseNonLeafNoGotoTerminal()    {}
 func perfRecordReuseNonLeafNoGotoNonTerminal() {}
 func perfRecordReuseNonLeafStateMiss()         {}
 func perfRecordReuseNonLeafStateZero()         {}
+func perfRecordParentChildren(int)             {}
+func perfRecordExtraNode()                     {}
+func perfRecordErrorNode()                     {}

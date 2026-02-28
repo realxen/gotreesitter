@@ -182,12 +182,14 @@ func BenchmarkGoParseFullDFA(b *testing.B) {
 	b.SetBytes(int64(len(src)))
 	b.ResetTimer()
 
+	var lastRuntime gotreesitter.ParseRuntime
 	for i := 0; i < b.N; i++ {
 		tree, err := parser.Parse(src)
 		if err != nil {
 			b.Fatalf("parse error: %v", err)
 		}
 		requireCompleteParse(b, tree, src, lang, "full dfa")
+		lastRuntime = tree.ParseRuntime()
 		tree.Release()
 	}
 	if statsEnabled {
@@ -208,6 +210,10 @@ func BenchmarkGoParseFullDFA(b *testing.B) {
 		fmt.Printf(
 			"STATS_PERF merge_in_hist=%s merge_alive_hist=%s merge_out_hist=%s fork_actions_hist=%s\n",
 			nonZeroBins(p.MergeStacksInHist[:]), nonZeroBins(p.MergeAliveHist[:]), nonZeroBins(p.MergeOutHist[:]), nonZeroBins(p.ForkActionsHist[:]),
+		)
+		fmt.Printf(
+			"STATS_PARSE nodes_new=%d children_ptrs=%d extras=%d errors=%d reuse_bytes=%d max_stacks=%d\n",
+			lastRuntime.NodesAllocated, p.ParentChildPointers, p.ExtraNodes, p.ErrorNodes, p.ReuseNonLeafBytes, lastRuntime.MaxStacksSeen,
 		)
 	}
 }

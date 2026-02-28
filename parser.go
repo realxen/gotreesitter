@@ -1981,6 +1981,9 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				errNode := newLeafNodeInArena(arena, errorSymbol, false,
 					tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 				errNode.hasError = true
+				if perfCountersEnabled {
+					perfRecordErrorNode()
+				}
 				errNode.parseState = currentState
 				p.pushStackNode(s, currentState, errNode, &scratch.entries, &scratch.gss)
 				nodeCount++
@@ -2096,6 +2099,9 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		leaf := newLeafNodeInArena(arena, tok.Symbol, named,
 			tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 		leaf.isExtra = act.Extra
+		if leaf.isExtra && perfCountersEnabled {
+			perfRecordExtraNode()
+		}
 		leaf.preGotoState = s.top().state
 		leaf.parseState = act.State
 		p.pushStackNode(s, act.State, leaf, entryScratch, gssScratch)
@@ -2140,6 +2146,9 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		errNode := newLeafNodeInArena(arena, errorSymbol, false,
 			tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 		errNode.hasError = true
+		if perfCountersEnabled {
+			perfRecordErrorNode()
+		}
 		recoverState := s.top().state
 		if act.State != 0 {
 			recoverState = act.State

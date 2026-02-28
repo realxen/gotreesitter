@@ -41,6 +41,9 @@ type perfCountersData struct {
 	mergeHashZero          atomic.Uint64
 	globalCapCulls         atomic.Uint64
 	globalCapCullDropped   atomic.Uint64
+	parentChildPointers    atomic.Uint64
+	extraNodes             atomic.Uint64
+	errorNodes             atomic.Uint64
 	mergeStacksInHist      [perfMergeHistBins]atomic.Uint64
 	mergeAliveHist         [perfMergeHistBins]atomic.Uint64
 	mergeOutHist           [perfMergeHistBins]atomic.Uint64
@@ -80,6 +83,9 @@ type PerfCounters struct {
 	MergeHashZero          uint64
 	GlobalCapCulls         uint64
 	GlobalCapCullDropped   uint64
+	ParentChildPointers    uint64
+	ExtraNodes             uint64
+	ErrorNodes             uint64
 	MergeStacksInHist      [perfMergeHistBins]uint64
 	MergeAliveHist         [perfMergeHistBins]uint64
 	MergeOutHist           [perfMergeHistBins]uint64
@@ -114,6 +120,9 @@ func ResetPerfCounters() {
 	perfCounters.reuseNonLeafNoGotoNt.Store(0)
 	perfCounters.reuseNonLeafStateMiss.Store(0)
 	perfCounters.reuseNonLeafStateZero.Store(0)
+	perfCounters.parentChildPointers.Store(0)
+	perfCounters.extraNodes.Store(0)
+	perfCounters.errorNodes.Store(0)
 	for i := range perfCounters.mergeStacksInHist {
 		perfCounters.mergeStacksInHist[i].Store(0)
 	}
@@ -169,6 +178,9 @@ func PerfCountersSnapshot() PerfCounters {
 	out.MergeHashZero = perfCounters.mergeHashZero.Load()
 	out.GlobalCapCulls = perfCounters.globalCapCulls.Load()
 	out.GlobalCapCullDropped = perfCounters.globalCapCullDropped.Load()
+	out.ParentChildPointers = perfCounters.parentChildPointers.Load()
+	out.ExtraNodes = perfCounters.extraNodes.Load()
+	out.ErrorNodes = perfCounters.errorNodes.Load()
 	for i := range out.MergeOutHist {
 		out.MergeOutHist[i] = perfCounters.mergeOutHist[i].Load()
 	}
@@ -320,6 +332,20 @@ func perfRecordReuseNonLeafStateMiss() {
 
 func perfRecordReuseNonLeafStateZero() {
 	perfCounters.reuseNonLeafStateZero.Add(1)
+}
+
+func perfRecordParentChildren(count int) {
+	if count > 0 {
+		perfCounters.parentChildPointers.Add(uint64(count))
+	}
+}
+
+func perfRecordExtraNode() {
+	perfCounters.extraNodes.Add(1)
+}
+
+func perfRecordErrorNode() {
+	perfCounters.errorNodes.Add(1)
 }
 
 func perfMergeHistBin(n int) int {
