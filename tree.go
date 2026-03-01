@@ -444,7 +444,7 @@ func populateParentNode(n *Node, children []*Node) {
 	}
 }
 
-func populateParentNodeNoLinks(n *Node, children []*Node) {
+func populateParentNodeNoLinks(n *Node, children []*Node, trackChildErrors bool) {
 	switch len(children) {
 	case 0:
 		return
@@ -454,7 +454,9 @@ func populateParentNodeNoLinks(n *Node, children []*Node) {
 		n.endByte = c0.endByte
 		n.startPoint = c0.startPoint
 		n.endPoint = c0.endPoint
-		n.hasError = c0.hasError
+		if trackChildErrors {
+			n.hasError = c0.hasError
+		}
 		return
 	case 2:
 		c0 := children[0]
@@ -463,7 +465,9 @@ func populateParentNodeNoLinks(n *Node, children []*Node) {
 		n.endByte = c1.endByte
 		n.startPoint = c0.startPoint
 		n.endPoint = c1.endPoint
-		n.hasError = c0.hasError || c1.hasError
+		if trackChildErrors {
+			n.hasError = c0.hasError || c1.hasError
+		}
 		return
 	default:
 		first := children[0]
@@ -472,10 +476,12 @@ func populateParentNodeNoLinks(n *Node, children []*Node) {
 		n.endByte = last.endByte
 		n.startPoint = first.startPoint
 		n.endPoint = last.endPoint
-		for i := range children {
-			if children[i].hasError {
-				n.hasError = true
-				break
+		if trackChildErrors {
+			for i := range children {
+				if children[i].hasError {
+					n.hasError = true
+					break
+				}
 			}
 		}
 	}
@@ -594,7 +600,7 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 	return n
 }
 
-func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16, trackChildErrors bool) *Node {
 	if arena == nil {
 		return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 	}
@@ -609,7 +615,7 @@ func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, child
 	n.fieldIDs = fieldIDs
 	n.productionID = productionID
 	n.childIndex = -1
-	populateParentNodeNoLinks(n, children)
+	populateParentNodeNoLinks(n, children, trackChildErrors)
 	return n
 }
 

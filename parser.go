@@ -1765,6 +1765,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	scratch := acquireParserScratch()
 	defer releaseParserScratch(scratch)
 	deferParentLinks := reuse == nil && oldTree == nil
+	trackChildErrors := !deferParentLinks
 
 	arena := acquireNodeArena(arenaClass)
 	arena.skipChildClear = reuse == nil && oldTree == nil
@@ -2083,7 +2084,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 						s.dead = true
 						continue
 					}
-					p.applyAction(s, recoverAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
+					p.applyAction(s, recoverAct, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 					needToken = true
 					continue
 				}
@@ -2095,6 +2096,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				errNode := newLeafNodeInArena(arena, errorSymbol, false,
 					tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 				errNode.hasError = true
+				trackChildErrors = true
 				if perfCountersEnabled {
 					perfRecordErrorNode()
 				}
@@ -2122,7 +2124,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 				if reuse != nil {
 					act := actions[0]
-					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
+					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 					continue
 				}
 				if perfCountersEnabled {
@@ -2134,7 +2136,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				const maxForkCloneDepth = 4 * 1024
 				if s.depth() > maxForkCloneDepth {
 					act := actions[0]
-					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
+					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 					continue
 				}
 				// Copy the current stack value before appending forks.
@@ -2143,19 +2145,19 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				for ai := 1; ai < len(actions); ai++ {
 					fork := base.cloneWithScratch(&scratch.gss)
 					act := actions[ai]
-					p.applyAction(&fork, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
+					p.applyAction(&fork, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 					stacks = append(stacks, fork)
 				}
 				// Re-acquire the pointer after possible reallocation.
 				s = &stacks[si]
 				act := actions[0]
-				p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
+				p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 			} else {
 				act := actions[0]
 				if act.Type == ParseActionReduce {
-					p.applyActionWithReduceChain(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
+					p.applyActionWithReduceChain(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 				} else {
-					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks)
+					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 				}
 			}
 		}
@@ -2251,15 +2253,15 @@ func classifyConflictShape(actions []ParseAction) (rrConflict, rsConflict bool) 
 	return reduceCount >= 2, false
 }
 
-func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool) {
-	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks)
+func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
+	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
 	if act.Type != ParseActionReduce || s == nil || s.dead || s.accepted || s.shifted {
 		return
 	}
-	p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks)
+	p.chainSingleReduceActions(s, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
 }
 
-func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool) {
+func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
 	if s == nil || s.dead || s.accepted || s.shifted {
 		return
 	}
@@ -2288,7 +2290,7 @@ func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bo
 			if perfCountersEnabled {
 				perfRecordReduceChainStep(chainLen)
 			}
-			p.applyAction(s, next, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks)
+			p.applyAction(s, next, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
 			if s.dead || s.accepted || s.shifted {
 				return
 			}
@@ -2312,7 +2314,7 @@ func (p *Parser) chainSingleReduceActions(s *glrStack, tok Token, anyReduced *bo
 }
 
 // applyAction applies a single parse action to a GLR stack.
-func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool) {
+func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) {
 	switch act.Type {
 	case ParseActionShift:
 		named := p.isNamedSymbol(tok.Symbol)
@@ -2337,7 +2339,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				if tmpEntries != nil {
 					tmp = *tmpEntries
 				}
-				p.applyReduceActionFromGSS(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, tmp, deferParentLinks)
+				p.applyReduceActionFromGSS(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, tmp, deferParentLinks, trackChildErrors != nil && *trackChildErrors)
 				return
 			}
 			if s.cacheEntries {
@@ -2350,7 +2352,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 				entries, borrowed = s.entriesForRead(tmp)
 			}
 		}
-		p.applyReduceAction(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, entries, deferParentLinks)
+		p.applyReduceAction(s, act, anyReduced, nodeCount, arena, entryScratch, gssScratch, entries, deferParentLinks, trackChildErrors != nil && *trackChildErrors)
 		if borrowed && tmpEntries != nil {
 			*tmpEntries = entries[:0]
 		}
@@ -2366,6 +2368,9 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		errNode := newLeafNodeInArena(arena, errorSymbol, false,
 			tok.StartByte, tok.EndByte, tok.StartPoint, tok.EndPoint)
 		errNode.hasError = true
+		if trackChildErrors != nil {
+			*trackChildErrors = true
+		}
 		if perfCountersEnabled {
 			perfRecordErrorNode()
 		}
@@ -2421,7 +2426,7 @@ func reduceWindowFromGSS(s *glrStack, childCount int, buf []stackEntry) ([]stack
 	return rev, topState, true
 }
 
-func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, tmp []stackEntry, deferParentLinks bool) {
+func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, tmp []stackEntry, deferParentLinks bool, trackChildErrors bool) {
 	childCount := int(act.ChildCount)
 	windowEntries, topState, ok := reduceWindowFromGSS(s, childCount, tmp)
 	if !ok {
@@ -2472,7 +2477,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, anyReduc
 	named := p.isNamedSymbol(act.Symbol)
 	var parent *Node
 	if deferParentLinks {
-		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID, trackChildErrors)
 	} else {
 		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
 	}
@@ -2693,7 +2698,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	return children, fieldIDs
 }
 
-func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry, deferParentLinks bool) {
+func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, entries []stackEntry, deferParentLinks bool, trackChildErrors bool) {
 	childCount := int(act.ChildCount)
 	window, ok := computeReduceRange(entries, childCount)
 	if !ok {
@@ -2731,7 +2736,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, anyReduced *boo
 	named := p.isNamedSymbol(act.Symbol)
 	var parent *Node
 	if deferParentLinks {
-		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID, trackChildErrors)
 	} else {
 		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
 	}
