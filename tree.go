@@ -444,6 +444,8 @@ func populateParentNode(n *Node, children []*Node) {
 	}
 }
 
+// populateParentNodeNoLinks computes parent span/error metadata from children
+// without wiring child.parent/childIndex links. Used on deferred-link paths.
 func populateParentNodeNoLinks(n *Node, children []*Node, trackChildErrors bool) {
 	switch len(children) {
 	case 0:

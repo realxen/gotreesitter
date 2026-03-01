@@ -45,6 +45,8 @@ const (
 	// headroom while avoiding very large retained scratch slabs.
 	maxRetainedStackEntryCap = 512 * 1024
 	// Hard cap on concurrently retained GLR stacks in parseInternal.
+	// Matches tree-sitter C runtime order-of-magnitude behavior while
+	// preserving enough alternatives for high-conflict grammars.
 	maxGLRStacks = 64
 	// Tree-sitter's C runtime caps links per stack node at 8.
 	// Keep the same cap to avoid turning per-key pruning into global-cap churn.
@@ -463,12 +465,6 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 	return true
 }
 
-// stackCompare defines the total ordering for stack preference.
-// Positive means `a` is preferred over `b`, negative means worse.
-func stackCompare(a, b glrStack) int {
-	return stackComparePtr(&a, &b)
-}
-
 func stackComparePtr(a, b *glrStack) int {
 	if perfCountersEnabled {
 		perfRecordStackCompare()
@@ -564,6 +560,11 @@ func preferOverflowCandidate(candidate, incumbent *glrStack, candidateHash, incu
 	return candidateHash > incumbentHash
 }
 
+// mergeStacksWithScratch performs bounded merge/pruning in three phases:
+//  1. drop dead stacks
+//  2. group by (state, byteOffset) merge key
+//  3. within each key keep exact-equivalent dedupes plus at most N survivors
+//     chosen by stackCompareMerge (with hash prefilter before deep equivalence)
 func mergeStacksWithScratch(stacks []glrStack, scratch *glrMergeScratch) []glrStack {
 	if len(stacks) == 0 {
 		return stacks

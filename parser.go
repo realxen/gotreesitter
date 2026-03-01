@@ -70,6 +70,15 @@ var (
 	parseNodeLimitScale     int
 )
 
+const (
+	// maxForkCloneDepth limits GLR stack cloning for pathological ambiguity.
+	// Above this depth, we execute only the first action to avoid runaway work.
+	maxForkCloneDepth = 4 * 1024
+	// maxConsecutivePrimaryReduces prevents infinite reduce loops on the
+	// primary stack when no token advancement occurs.
+	maxConsecutivePrimaryReduces = 10
+)
+
 func parseNodeLimitScaleFactor() int {
 	parseNodeLimitScaleOnce.Do(func() {
 		parseNodeLimitScale = 1
@@ -292,6 +301,8 @@ func buildStateRecoverTable(lang *Language) []bool {
 	return table
 }
 
+// buildKeywordStates precomputes whether each parser state can produce a
+// keyword token, so keyword promotion can skip states where it is impossible.
 func buildKeywordStates(lang *Language) []bool {
 	if lang == nil || lang.KeywordCaptureToken == 0 || len(lang.KeywordLexStates) == 0 {
 		return nil
@@ -413,6 +424,8 @@ func buildKeywordStates(lang *Language) []bool {
 	return hasKeyword
 }
 
+// buildRecoverActionsByState precomputes recover actions keyed by parser state
+// and symbol to avoid repeated action-table scans in recover lookups.
 func buildRecoverActionsByState(lang *Language) ([][]recoverSymbolAction, []bool, []bool) {
 	if lang == nil {
 		return nil, nil, nil
@@ -1001,7 +1014,9 @@ func (d *dfaTokenSource) Close() {
 }
 
 // DebugDFA enables trace logging for DFA token production.
-var DebugDFA bool
+//
+// Use `DebugDFA.Store(true/false)` to toggle at runtime.
+var DebugDFA atomic.Bool
 
 func (d *dfaTokenSource) Next() Token {
 	startPos := 0
@@ -1016,12 +1031,12 @@ func (d *dfaTokenSource) Next() Token {
 			}
 			perfRecordLexed(consumed, 1)
 		}
-		if DebugDFA {
+		if DebugDFA.Load() {
 			name := ""
 			if int(tok.Symbol) < len(d.language.SymbolNames) {
 				name = d.language.SymbolNames[tok.Symbol]
 			}
-			println("  EXT tok", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text)
+			fmt.Printf("  EXT tok %d %s %d %d %s\n", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text)
 		}
 		return tok
 	}
@@ -1039,12 +1054,12 @@ func (d *dfaTokenSource) Next() Token {
 		}
 		perfRecordLexed(consumed, 1)
 	}
-	if DebugDFA {
+	if DebugDFA.Load() {
 		name := ""
 		if int(tok.Symbol) < len(d.language.SymbolNames) {
 			name = d.language.SymbolNames[tok.Symbol]
 		}
-		println("  DFA tok", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, "state=", d.state, "lexState=", lexState)
+		fmt.Printf("  DFA tok %d %s %d %d %s state=%d lexState=%d\n", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, d.state, lexState)
 	}
 	return tok
 }
@@ -1150,6 +1165,16 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	return tok, true
 }
 
+const (
+	extNameAutomaticSemicolon                  = "_automatic_semicolon"
+	extNameFunctionSignatureAutomaticSemicolon = "_function_signature_automatic_semicolon"
+	extNameImplicitSemicolon                   = "_implicit_semicolon"
+	extNameLineBreak                           = "_line_break"
+	extNameNewline                             = "_newline"
+	extNameLineEndingOrEOF                     = "_line_ending_or_eof"
+	extNameJSXText                             = "jsx_text"
+)
+
 func (d *dfaTokenSource) syntheticExternalToken(valid []bool) (Token, bool) {
 	// Conservative fallback when no external scanner is registered:
 	// synthesize automatic-semicolon style external tokens only when the
@@ -1167,13 +1192,13 @@ func (d *dfaTokenSource) syntheticExternalToken(valid []bool) (Token, bool) {
 			continue
 		}
 		switch d.language.SymbolNames[nameIdx] {
-		case "_automatic_semicolon", "_function_signature_automatic_semicolon", "_implicit_semicolon":
+		case extNameAutomaticSemicolon, extNameFunctionSignatureAutomaticSemicolon, extNameImplicitSemicolon:
 			return d.syntheticAutomaticSemicolon(sym)
-		case "_line_break", "_newline":
+		case extNameLineBreak, extNameNewline:
 			return d.syntheticLineBreak(sym)
-		case "_line_ending_or_eof":
+		case extNameLineEndingOrEOF:
 			return d.syntheticLineEndingOrEOF(sym)
-		case "jsx_text":
+		case extNameJSXText:
 			return d.syntheticJSXText(sym)
 		}
 	}
@@ -1976,6 +2001,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			}
 		}
 
+		// --- Token acquisition and incremental reuse ---
 		if needToken {
 			tok = ts.Next()
 			perfTokensConsumed++
@@ -2019,6 +2045,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			}
 		}
 
+		// --- Action application for all alive stacks ---
 		// Process all alive stacks for this token.
 		// We iterate by index because forks may append to `stacks`.
 		numStacks := len(stacks)
@@ -2134,7 +2161,6 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// Deep-stack GLR forks can trigger pathological clone volumes on
 				// very large inputs. At extreme depths, take the primary action
 				// to keep parsing bounded.
-				const maxForkCloneDepth = 4 * 1024
 				if s.depth() > maxForkCloneDepth {
 					act := actions[0]
 					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
@@ -2179,7 +2205,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 					lastReduceState = topState
 					consecutiveReduces = 1
 				}
-				if consecutiveReduces > 10 {
+				if consecutiveReduces > maxConsecutivePrimaryReduces {
 					needToken = true
 					consecutiveReduces = 0
 				}

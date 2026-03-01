@@ -78,9 +78,16 @@ func (l *ExternalLexer) SetResultSymbol(sym Symbol) {
 	l.hasResult = true
 }
 
-// GetColumn returns the current column (0-based) at the scanner cursor.
-func (l *ExternalLexer) GetColumn() uint32 {
+// Column returns the current column (0-based) at the scanner cursor.
+func (l *ExternalLexer) Column() uint32 {
 	return l.point.Column
+}
+
+// GetColumn returns the current column (0-based) at the scanner cursor.
+//
+// Deprecated: use Column.
+func (l *ExternalLexer) GetColumn() uint32 {
+	return l.Column()
 }
 
 func (l *ExternalLexer) token() (Token, bool) {
