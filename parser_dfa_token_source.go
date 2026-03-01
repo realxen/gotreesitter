@@ -1,0 +1,574 @@
+package gotreesitter
+
+import (
+	"fmt"
+	"sync/atomic"
+	"unicode/utf8"
+)
+
+type dfaTokenSource struct {
+	lexer    *Lexer
+	language *Language
+	state    StateID
+
+	lookupActionIndex func(state StateID, sym Symbol) uint16
+	hasKeywordState   []bool
+	externalPayload   any
+	externalValid     []bool
+	glrStates         []StateID // all active GLR stack states
+}
+
+func (d *dfaTokenSource) Close() {
+	if d.language == nil || d.language.ExternalScanner == nil || d.externalPayload == nil {
+		return
+	}
+	d.language.ExternalScanner.Destroy(d.externalPayload)
+	d.externalPayload = nil
+}
+
+// DebugDFA enables trace logging for DFA token production.
+//
+// Use `DebugDFA.Store(true/false)` to toggle at runtime.
+var DebugDFA atomic.Bool
+
+func (d *dfaTokenSource) Next() Token {
+	startPos := 0
+	if perfCountersEnabled {
+		startPos = d.lexer.pos
+	}
+	if tok, ok := d.nextExternalToken(); ok {
+		if perfCountersEnabled {
+			consumed := d.lexer.pos - startPos
+			if consumed < 0 {
+				consumed = 0
+			}
+			perfRecordLexed(consumed, 1)
+		}
+		if DebugDFA.Load() {
+			name := ""
+			if int(tok.Symbol) < len(d.language.SymbolNames) {
+				name = d.language.SymbolNames[tok.Symbol]
+			}
+			fmt.Printf("  EXT tok %d %s %d %d %s\n", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text)
+		}
+		return tok
+	}
+
+	lexState := uint16(0)
+	if int(d.state) < len(d.language.LexModes) {
+		lexState = d.language.LexModes[d.state].LexState
+	}
+	tok := d.lexer.Next(lexState)
+	tok = d.promoteKeyword(tok)
+	if perfCountersEnabled {
+		consumed := d.lexer.pos - startPos
+		if consumed < 0 {
+			consumed = 0
+		}
+		perfRecordLexed(consumed, 1)
+	}
+	if DebugDFA.Load() {
+		name := ""
+		if int(tok.Symbol) < len(d.language.SymbolNames) {
+			name = d.language.SymbolNames[tok.Symbol]
+		}
+		fmt.Printf("  DFA tok %d %s %d %d %s state=%d lexState=%d\n", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, d.state, lexState)
+	}
+	return tok
+}
+
+func (d *dfaTokenSource) SetParserState(state StateID) {
+	d.state = state
+}
+
+func (d *dfaTokenSource) SetGLRStates(states []StateID) {
+	d.glrStates = states
+}
+
+func (d *dfaTokenSource) SkipToByte(offset uint32) Token {
+	target := int(offset)
+	if target < d.lexer.pos {
+		// Rewind isn't supported for DFA token sources during parse.
+		return d.Next()
+	}
+	startPos := 0
+	if perfCountersEnabled {
+		startPos = d.lexer.pos
+	}
+	for d.lexer.pos < target {
+		d.lexer.skipOneRune()
+	}
+	if perfCountersEnabled {
+		consumed := d.lexer.pos - startPos
+		if consumed < 0 {
+			consumed = 0
+		}
+		perfRecordLexed(consumed, 0)
+	}
+	return d.Next()
+}
+
+func (d *dfaTokenSource) SkipToByteWithPoint(offset uint32, pt Point) Token {
+	target := int(offset)
+	if target > len(d.lexer.source) {
+		target = len(d.lexer.source)
+	}
+	if target >= d.lexer.pos {
+		d.lexer.pos = target
+		d.lexer.row = pt.Row
+		d.lexer.col = pt.Column
+	}
+	return d.Next()
+}
+
+func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
+	if d.language == nil || d.lookupActionIndex == nil {
+		return Token{}, false
+	}
+	if len(d.language.ExternalSymbols) == 0 {
+		return Token{}, false
+	}
+
+	if cap(d.externalValid) < len(d.language.ExternalSymbols) {
+		d.externalValid = make([]bool, len(d.language.ExternalSymbols))
+	}
+	valid := d.externalValid[:len(d.language.ExternalSymbols)]
+	for i := range valid {
+		valid[i] = false
+	}
+
+	// Compute valid external symbols as the union across all active GLR
+	// stacks. Different stacks may be in different parser states with
+	// different valid external tokens. The scanner needs to see the union
+	// so it can produce tokens that any stack might need. Stacks that
+	// can't use the resulting token will be pruned by the action phase.
+	anyValid := false
+	states := d.glrStates
+	if len(states) == 0 {
+		states = []StateID{d.state}
+	}
+	for _, st := range states {
+		for i, sym := range d.language.ExternalSymbols {
+			if !valid[i] && d.lookupActionIndex(st, sym) != 0 {
+				valid[i] = true
+				anyValid = true
+			}
+		}
+	}
+	if !anyValid {
+		return Token{}, false
+	}
+
+	if d.language.ExternalScanner == nil {
+		return d.syntheticExternalToken(valid)
+	}
+
+	el := newExternalLexer(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
+	if !RunExternalScanner(d.language, d.externalPayload, el, valid) {
+		return Token{}, false
+	}
+	tok, ok := el.token()
+	if !ok {
+		return Token{}, false
+	}
+
+	d.lexer.pos = int(tok.EndByte)
+	d.lexer.row = tok.EndPoint.Row
+	d.lexer.col = tok.EndPoint.Column
+	return tok, true
+}
+
+const (
+	extNameAutomaticSemicolon                  = "_automatic_semicolon"
+	extNameFunctionSignatureAutomaticSemicolon = "_function_signature_automatic_semicolon"
+	extNameImplicitSemicolon                   = "_implicit_semicolon"
+	extNameLineBreak                           = "_line_break"
+	extNameNewline                             = "_newline"
+	extNameLineEndingOrEOF                     = "_line_ending_or_eof"
+	extNameJSXText                             = "jsx_text"
+)
+
+func (d *dfaTokenSource) syntheticExternalToken(valid []bool) (Token, bool) {
+	// Conservative fallback when no external scanner is registered:
+	// synthesize automatic-semicolon style external tokens only when the
+	// grammar explicitly allows them in the current state.
+	if d.language == nil || d.lexer == nil {
+		return Token{}, false
+	}
+
+	for i, sym := range d.language.ExternalSymbols {
+		if i >= len(valid) || !valid[i] {
+			continue
+		}
+		nameIdx := int(sym)
+		if nameIdx < 0 || nameIdx >= len(d.language.SymbolNames) {
+			continue
+		}
+		switch d.language.SymbolNames[nameIdx] {
+		case extNameAutomaticSemicolon, extNameFunctionSignatureAutomaticSemicolon, extNameImplicitSemicolon:
+			return d.syntheticAutomaticSemicolon(sym)
+		case extNameLineBreak, extNameNewline:
+			return d.syntheticLineBreak(sym)
+		case extNameLineEndingOrEOF:
+			return d.syntheticLineEndingOrEOF(sym)
+		case extNameJSXText:
+			return d.syntheticJSXText(sym)
+		}
+	}
+
+	return Token{}, false
+}
+
+func (d *dfaTokenSource) syntheticAutomaticSemicolon(sym Symbol) (Token, bool) {
+	if d.lexer == nil {
+		return Token{}, false
+	}
+	source := d.lexer.source
+	startPos := d.lexer.pos
+	startPoint := Point{Row: d.lexer.row, Column: d.lexer.col}
+
+	// EOF insertion is always allowed when the grammar requests it.
+	if startPos >= len(source) {
+		return Token{
+			Symbol:     sym,
+			StartByte:  uint32(startPos),
+			EndByte:    uint32(startPos),
+			StartPoint: startPoint,
+			EndPoint:   startPoint,
+		}, true
+	}
+
+	pos := startPos
+	endRow := d.lexer.row
+	endCol := d.lexer.col
+	sawLineBreak := false
+
+	// Consume horizontal space, then allow insertion on line break or EOF.
+	for pos < len(source) {
+		switch source[pos] {
+		case ' ', '\t', '\f':
+			pos++
+			endCol++
+		case '\r':
+			pos++
+			if pos < len(source) && source[pos] == '\n' {
+				pos++
+			}
+			endRow++
+			endCol = 0
+			sawLineBreak = true
+			goto done
+		case '\n':
+			pos++
+			endRow++
+			endCol = 0
+			sawLineBreak = true
+			goto done
+		default:
+			return Token{}, false
+		}
+	}
+
+	// Reached EOF after horizontal space.
+	return Token{
+		Symbol:     sym,
+		StartByte:  uint32(startPos),
+		EndByte:    uint32(pos),
+		StartPoint: startPoint,
+		EndPoint:   Point{Row: endRow, Column: endCol},
+	}, true
+
+done:
+	if !sawLineBreak {
+		return Token{}, false
+	}
+
+	// Consume indentation after newline so lexing resumes at next token.
+	for pos < len(source) {
+		switch source[pos] {
+		case ' ', '\t', '\f':
+			pos++
+			endCol++
+		default:
+			return Token{
+				Symbol:     sym,
+				StartByte:  uint32(startPos),
+				EndByte:    uint32(pos),
+				StartPoint: startPoint,
+				EndPoint:   Point{Row: endRow, Column: endCol},
+			}, true
+		}
+	}
+
+	return Token{
+		Symbol:     sym,
+		StartByte:  uint32(startPos),
+		EndByte:    uint32(pos),
+		StartPoint: startPoint,
+		EndPoint:   Point{Row: endRow, Column: endCol},
+	}, true
+}
+
+func (d *dfaTokenSource) syntheticLineBreak(sym Symbol) (Token, bool) {
+	if d.lexer == nil {
+		return Token{}, false
+	}
+	source := d.lexer.source
+	startPos := d.lexer.pos
+	startPoint := Point{Row: d.lexer.row, Column: d.lexer.col}
+
+	pos := startPos
+	endRow := d.lexer.row
+	endCol := d.lexer.col
+
+	for pos < len(source) {
+		switch source[pos] {
+		case ' ', '\t', '\f':
+			pos++
+			endCol++
+		case '\r':
+			pos++
+			if pos < len(source) && source[pos] == '\n' {
+				pos++
+			}
+			endRow++
+			endCol = 0
+			goto consumeIndent
+		case '\n':
+			pos++
+			endRow++
+			endCol = 0
+			goto consumeIndent
+		default:
+			return Token{}, false
+		}
+	}
+
+	return Token{}, false
+
+consumeIndent:
+	for pos < len(source) {
+		switch source[pos] {
+		case ' ', '\t', '\f':
+			pos++
+			endCol++
+		default:
+			return Token{
+				Symbol:     sym,
+				StartByte:  uint32(startPos),
+				EndByte:    uint32(pos),
+				StartPoint: startPoint,
+				EndPoint:   Point{Row: endRow, Column: endCol},
+			}, true
+		}
+	}
+
+	return Token{
+		Symbol:     sym,
+		StartByte:  uint32(startPos),
+		EndByte:    uint32(pos),
+		StartPoint: startPoint,
+		EndPoint:   Point{Row: endRow, Column: endCol},
+	}, true
+}
+
+func (d *dfaTokenSource) syntheticLineEndingOrEOF(sym Symbol) (Token, bool) {
+	if d.lexer == nil {
+		return Token{}, false
+	}
+	if tok, ok := d.syntheticLineBreak(sym); ok {
+		return tok, true
+	}
+
+	source := d.lexer.source
+	startPos := d.lexer.pos
+	startPoint := Point{Row: d.lexer.row, Column: d.lexer.col}
+	if startPos >= len(source) {
+		return Token{
+			Symbol:     sym,
+			StartByte:  uint32(startPos),
+			EndByte:    uint32(startPos),
+			StartPoint: startPoint,
+			EndPoint:   startPoint,
+		}, true
+	}
+
+	pos := startPos
+	endCol := d.lexer.col
+	for pos < len(source) {
+		switch source[pos] {
+		case ' ', '\t', '\f':
+			pos++
+			endCol++
+		default:
+			return Token{}, false
+		}
+	}
+
+	return Token{
+		Symbol:     sym,
+		StartByte:  uint32(startPos),
+		EndByte:    uint32(pos),
+		StartPoint: startPoint,
+		EndPoint:   Point{Row: d.lexer.row, Column: endCol},
+	}, true
+}
+
+func (d *dfaTokenSource) syntheticJSXText(sym Symbol) (Token, bool) {
+	if d.lexer == nil {
+		return Token{}, false
+	}
+	source := d.lexer.source
+	startPos := d.lexer.pos
+	if startPos >= len(source) {
+		return Token{}, false
+	}
+
+	switch source[startPos] {
+	case '<', '{', '}':
+		return Token{}, false
+	}
+
+	pos := startPos
+	endRow := d.lexer.row
+	endCol := d.lexer.col
+
+	for pos < len(source) {
+		switch source[pos] {
+		case '<', '{', '}':
+			if pos == startPos {
+				return Token{}, false
+			}
+			startPoint := Point{Row: d.lexer.row, Column: d.lexer.col}
+			return Token{
+				Symbol:     sym,
+				StartByte:  uint32(startPos),
+				EndByte:    uint32(pos),
+				StartPoint: startPoint,
+				EndPoint:   Point{Row: endRow, Column: endCol},
+			}, true
+		case '\r':
+			pos++
+			if pos < len(source) && source[pos] == '\n' {
+				pos++
+			}
+			endRow++
+			endCol = 0
+		case '\n':
+			pos++
+			endRow++
+			endCol = 0
+		default:
+			_, size := utf8.DecodeRune(source[pos:])
+			if size <= 0 {
+				size = 1
+			}
+			pos += size
+			endCol++
+		}
+	}
+
+	if pos == startPos {
+		return Token{}, false
+	}
+	startPoint := Point{Row: d.lexer.row, Column: d.lexer.col}
+	return Token{
+		Symbol:     sym,
+		StartByte:  uint32(startPos),
+		EndByte:    uint32(pos),
+		StartPoint: startPoint,
+		EndPoint:   Point{Row: endRow, Column: endCol},
+	}, true
+}
+
+func (d *dfaTokenSource) promoteKeyword(tok Token) Token {
+	if d.language == nil {
+		return tok
+	}
+	if tok.Symbol == 0 {
+		return tok
+	}
+	if len(d.language.KeywordLexStates) == 0 {
+		return tok
+	}
+	if d.language.KeywordCaptureToken == 0 {
+		return tok
+	}
+	if tok.Symbol != d.language.KeywordCaptureToken {
+		return tok
+	}
+	if tok.EndByte <= tok.StartByte {
+		return tok
+	}
+	if len(d.hasKeywordState) > 0 {
+		state := int(d.state)
+		if state >= 0 && state < len(d.hasKeywordState) && !d.hasKeywordState[state] {
+			return tok
+		}
+	}
+
+	start := int(tok.StartByte)
+	end := int(tok.EndByte)
+	if start < 0 || end < start || end > len(d.lexer.source) {
+		return tok
+	}
+
+	kw := Lexer{
+		states: d.language.KeywordLexStates,
+		source: d.lexer.source[start:end],
+	}
+	kwTok := kw.Next(0)
+	if kwTok.Symbol == 0 {
+		return tok
+	}
+	if kwTok.StartByte != 0 {
+		return tok
+	}
+	if kwTok.EndByte != uint32(end-start) {
+		return tok
+	}
+
+	// ABI 15: Check if keyword is reserved in this parse state.
+	if len(d.language.ReservedWords) > 0 && d.language.MaxReservedWordSetSize > 0 {
+		if int(d.state) < len(d.language.LexModes) {
+			rwSetID := d.language.LexModes[d.state].ReservedWordSetID
+			if rwSetID > 0 {
+				stride := int(d.language.MaxReservedWordSetSize)
+				start := int(rwSetID) * stride
+				end := start + stride
+				if end > len(d.language.ReservedWords) {
+					end = len(d.language.ReservedWords)
+				}
+				for i := start; i < end; i++ {
+					if d.language.ReservedWords[i] == 0 {
+						break
+					}
+					if d.language.ReservedWords[i] == kwTok.Symbol {
+						return tok // reserved — don't promote
+					}
+				}
+			}
+		}
+	}
+
+	// Context-aware promotion: only use the keyword symbol if the current
+	// parser state has a valid action for it. This prevents contextual
+	// keywords like "get"/"set" from being promoted in positions where
+	// they should be treated as identifiers (e.g., obj.get(...)).
+	if d.lookupActionIndex != nil {
+		kwHasAction := d.lookupActionIndex(d.state, kwTok.Symbol) != 0
+		idHasAction := d.lookupActionIndex(d.state, tok.Symbol) != 0
+		if !kwHasAction && idHasAction {
+			return tok // parser expects identifier, not keyword
+		}
+	}
+
+	tok.Symbol = kwTok.Symbol
+	return tok
+}
+
+// parseIterations returns the iteration limit scaled to input size.
+// A correctly-parsed file needs roughly (tokens * grammar_depth) iterations.
+// For typical source (~5 bytes/token, ~10 reduce depth), that's sourceLen*2.
+// We use sourceLen*20 as a generous upper bound that still prevents runaway
+// parsing from OOMing the machine.
