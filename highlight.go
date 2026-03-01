@@ -93,24 +93,7 @@ func (h *Highlighter) Highlight(source []byte) []HighlightRange {
 }
 
 func (h *Highlighter) parse(source []byte, oldTree *Tree) *Tree {
-	var tree *Tree
-	var err error
-	if h.tokenSourceFactory != nil {
-		ts := h.tokenSourceFactory(source)
-		if oldTree != nil {
-			tree, err = h.parser.ParseIncrementalWithTokenSource(source, oldTree, ts)
-		} else {
-			tree, err = h.parser.ParseWithTokenSource(source, ts)
-		}
-	} else if oldTree != nil {
-		tree, err = h.parser.ParseIncremental(source, oldTree)
-	} else {
-		tree, err = h.parser.Parse(source)
-	}
-	if err != nil {
-		return NewTree(nil, source, h.lang)
-	}
-	return tree
+	return dispatchParse(h.parser, source, oldTree, h.tokenSourceFactory, h.lang)
 }
 
 func (h *Highlighter) highlightTree(tree *Tree) []HighlightRange {
