@@ -47,7 +47,7 @@ const (
 	// Hard cap on concurrently retained GLR stacks in parseInternal.
 	// This is intentionally higher than tree-sitter C's MAX_VERSION_COUNT (6)
 	// to preserve alternatives on highly-ambiguous grammars.
-	maxGLRStacks = 64
+	maxGLRStacks = 6
 	// Per-merge-key survivor cap. Tuned below 8 to reduce full-parse GLR churn
 	// while keeping corpus parity and correctness gates green.
 	maxStacksPerMergeKey = 6

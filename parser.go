@@ -1944,10 +1944,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			if perfCountersEnabled {
 				perfRecordGlobalCapCull(len(stacks), maxStacks)
 			}
-			sort.SliceStable(stacks, func(i, j int) bool {
-				return stackComparePtr(&stacks[i], &stacks[j]) > 0
-			})
-			stacks = stacks[:maxStacks]
+			stacks = retainTopStacks(stacks, maxStacks)
 		}
 
 		// Keep the most promising stack in slot 0 because several parser
@@ -2252,6 +2249,27 @@ func (p *Parser) promotePrimaryStack(stacks []glrStack) {
 	if best != 0 {
 		stacks[0], stacks[best] = stacks[best], stacks[0]
 	}
+}
+
+func retainTopStacks(stacks []glrStack, keep int) []glrStack {
+	if keep <= 0 {
+		return stacks[:0]
+	}
+	if len(stacks) <= keep {
+		return stacks
+	}
+	for i := 0; i < keep; i++ {
+		best := i
+		for j := i + 1; j < len(stacks); j++ {
+			if stackComparePtr(&stacks[j], &stacks[best]) > 0 {
+				best = j
+			}
+		}
+		if best != i {
+			stacks[i], stacks[best] = stacks[best], stacks[i]
+		}
+	}
+	return stacks[:keep]
 }
 
 func classifyConflictShape(actions []ParseAction) (rrConflict, rsConflict bool) {
