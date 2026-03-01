@@ -20,6 +20,13 @@ type rewriteEdit struct {
 	newText   []byte
 }
 
+type byteToPointScanner struct {
+	source []byte
+	pos    uint32
+	row    uint32
+	col    uint32
+}
+
 // NewRewriter creates a Rewriter for the given source text.
 func NewRewriter(source []byte) *Rewriter {
 	return &Rewriter{source: source}
@@ -114,6 +121,7 @@ func (r *Rewriter) Apply() (newSource []byte, edits []InputEdit, err error) {
 	var buf []byte
 	pos := uint32(0)
 	delta := int64(0) // cumulative byte offset shift
+	scanner := byteToPointScanner{source: r.source}
 
 	for _, e := range sorted {
 		// Copy unchanged bytes before this edit.
@@ -122,8 +130,8 @@ func (r *Rewriter) Apply() (newSource []byte, edits []InputEdit, err error) {
 		}
 
 		// Compute InputEdit.
-		startPoint := r.byteToPoint(e.startByte)
-		oldEndPoint := r.byteToPoint(e.endByte)
+		startPoint := scanner.pointAt(e.startByte)
+		oldEndPoint := scanner.pointAt(e.endByte)
 		newEndByte := uint32(int64(e.startByte) + delta + int64(len(e.newText)))
 		newEndPoint := computeNewEndPoint(startPoint, e.newText)
 
@@ -165,23 +173,54 @@ func (r *Rewriter) ApplyToTree(tree *Tree) ([]byte, error) {
 
 // byteToPoint scans source to compute the row/col Point for a byte offset.
 func (r *Rewriter) byteToPoint(offset uint32) Point {
-	if offset == 0 {
-		return Point{Row: 0, Column: 0}
+	scanner := byteToPointScanner{source: r.source}
+	return scanner.pointAt(offset)
+}
+
+func (s *byteToPointScanner) pointAt(offset uint32) Point {
+	if s == nil {
+		return Point{}
 	}
-	if int(offset) > len(r.source) {
-		offset = uint32(len(r.source))
+	if offset == 0 {
+		return Point{}
+	}
+	if int(offset) > len(s.source) {
+		offset = uint32(len(s.source))
+	}
+	if offset < s.pos {
+		row, col := scanPointFromStart(s.source, offset)
+		s.pos = offset
+		s.row = row
+		s.col = col
+		return Point{Row: row, Column: col}
+	}
+	for s.pos < offset {
+		if s.source[s.pos] == '\n' {
+			s.row++
+			s.col = 0
+		} else {
+			s.col++
+		}
+		s.pos++
+	}
+	return Point{Row: s.row, Column: s.col}
+}
+
+func scanPointFromStart(source []byte, offset uint32) (uint32, uint32) {
+	if offset == 0 {
+		return 0, 0
 	}
 	row := uint32(0)
 	col := uint32(0)
 	for i := uint32(0); i < offset; i++ {
-		if r.source[i] == '\n' {
+		if source[i] == '\n' {
 			row++
 			col = 0
 		} else {
 			col++
 		}
 	}
-	return Point{Row: row, Column: col}
+	return row, col
 }
 
 // computeNewEndPoint computes the endpoint after inserting newText starting at startPoint.
