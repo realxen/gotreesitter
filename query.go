@@ -806,6 +806,8 @@ func applySelectAdjacent(pred QueryPredicate, captures []QueryCapture) []QueryCa
 	}
 	if len(anchors) == 0 {
 		// No anchors — remove all items captures.
+		// Reuse the input backing array because captures is an ephemeral
+		// per-match slice owned by directive application.
 		out := captures[:0]
 		for _, c := range captures {
 			if c.Name != itemsName {
@@ -849,6 +851,8 @@ func applyStrip(pred QueryPredicate, captures []QueryCapture, source []byte) []Q
 	if pred.regex == nil {
 		return captures
 	}
+	// Mutate captures in place: directive application owns this slice and the
+	// updated TextOverride should be visible to downstream consumers.
 	for i := range captures {
 		if captures[i].Name == pred.leftCapture && captures[i].Node != nil {
 			text := captures[i].Node.Text(source)

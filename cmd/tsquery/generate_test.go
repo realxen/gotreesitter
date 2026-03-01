@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -176,6 +177,24 @@ func TestGenerateDoNotEditHeader(t *testing.T) {
 
 	if !strings.Contains(code, "DO NOT EDIT") {
 		t.Error("expected DO NOT EDIT header")
+	}
+}
+
+func TestGoStringLiteralQuotedFallbackEscapesCarriageReturn(t *testing.T) {
+	input := "line1`\r\nline2\t\\\""
+	lit := goStringLiteral(input)
+	if !strings.HasPrefix(lit, "\"") || !strings.HasSuffix(lit, "\"") {
+		t.Fatalf("expected quoted-string fallback, got %q", lit)
+	}
+	if !strings.Contains(lit, `\r`) {
+		t.Fatalf("expected carriage return escape in literal, got %q", lit)
+	}
+	got, err := strconv.Unquote(lit)
+	if err != nil {
+		t.Fatalf("Unquote(%q): %v", lit, err)
+	}
+	if got != input {
+		t.Fatalf("roundtrip mismatch: got %q, want %q", got, input)
 	}
 }
 
