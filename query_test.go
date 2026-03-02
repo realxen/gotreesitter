@@ -2103,6 +2103,100 @@ func TestQueryCursorSetPointRange(t *testing.T) {
 	}
 }
 
+func TestQueryCursorSetMatchLimit(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`[(identifier) (number)] @x`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	cursor := q.Exec(tree.RootNode(), tree.Language(), tree.Source())
+	cursor.SetMatchLimit(1)
+
+	if _, ok := cursor.NextMatch(); !ok {
+		t.Fatal("expected first match")
+	}
+	if _, ok := cursor.NextMatch(); ok {
+		t.Fatal("expected second call to stop at match limit")
+	}
+	if !cursor.DidExceedMatchLimit() {
+		t.Fatal("expected DidExceedMatchLimit() to be true")
+	}
+}
+
+func TestQueryCursorSetMaxStartDepth(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(identifier) @id`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	// identifier is below depth 1 in buildSimpleTree, so depth 1 should yield none.
+	cursor := q.Exec(tree.RootNode(), tree.Language(), tree.Source())
+	cursor.SetMaxStartDepth(1)
+	if _, ok := cursor.NextMatch(); ok {
+		t.Fatal("expected no matches at max start depth 1")
+	}
+
+	cursor = q.Exec(tree.RootNode(), tree.Language(), tree.Source())
+	cursor.SetMaxStartDepth(2)
+	match, ok := cursor.NextMatch()
+	if !ok {
+		t.Fatal("expected match at max start depth 2")
+	}
+	if got, want := match.Captures[0].Node.Text(tree.Source()), "main"; got != want {
+		t.Fatalf("capture text: got %q want %q", got, want)
+	}
+}
+
+func TestQueryDisableCapture(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(function_declaration name: (identifier) @id body: (block (number) @num))`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	q.DisableCapture("num")
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 1 {
+		t.Fatalf("captures: got %d want 1", len(matches[0].Captures))
+	}
+	if got, want := matches[0].Captures[0].Name, "id"; got != want {
+		t.Fatalf("capture name: got %q want %q", got, want)
+	}
+}
+
+func TestQueryDisablePattern(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery("(identifier) @x\n(number) @x", lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	q.DisablePattern(0)
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 1 {
+		t.Fatalf("captures: got %d want 1", len(matches[0].Captures))
+	}
+	if got, want := matches[0].Captures[0].Node.Text(tree.Source()), "42"; got != want {
+		t.Fatalf("capture text: got %q want %q", got, want)
+	}
+}
+
 func TestMatchDeeplyNested(t *testing.T) {
 	lang := queryTestLanguage()
 
@@ -2261,7 +2355,9 @@ func buildFieldedTree(lang *Language) *Tree {
 // ---------------------------------------------------------------------------
 
 // buildMultiIdentTree creates a tree with three identifier children under a block:
-//   program > block > [ identifier("foo"), identifier("bar"), identifier("baz") ]
+//
+//	program > block > [ identifier("foo"), identifier("bar"), identifier("baz") ]
+//
 // source: "foo bar baz"
 func buildMultiIdentTree(lang *Language) *Tree {
 	source := []byte("foo bar baz")
@@ -2411,9 +2507,9 @@ func TestAnyEqMatchesPredicates(t *testing.T) {
 
 func TestAnyEqCaptureVsCapture(t *testing.T) {
 	source := []byte("foo bar baz bar")
-	n1 := leaf(Symbol(1), true, 0, 3)   // "foo"
-	n2 := leaf(Symbol(1), true, 4, 7)   // "bar"
-	n3 := leaf(Symbol(1), true, 8, 11)  // "baz"
+	n1 := leaf(Symbol(1), true, 0, 3)     // "foo"
+	n2 := leaf(Symbol(1), true, 4, 7)     // "bar"
+	n3 := leaf(Symbol(1), true, 8, 11)    // "baz"
 	nRef := leaf(Symbol(1), true, 12, 15) // "bar"
 
 	captures := []QueryCapture{
@@ -2445,8 +2541,8 @@ func TestAnyEqCaptureVsCapture(t *testing.T) {
 
 func TestAnyNotEqMatchesPredicates(t *testing.T) {
 	source := []byte("bar bar bar")
-	n1 := leaf(Symbol(1), true, 0, 3) // "bar"
-	n2 := leaf(Symbol(1), true, 4, 7) // "bar"
+	n1 := leaf(Symbol(1), true, 0, 3)  // "bar"
+	n2 := leaf(Symbol(1), true, 4, 7)  // "bar"
 	n3 := leaf(Symbol(1), true, 8, 11) // "bar"
 
 	captures := []QueryCapture{
@@ -2679,10 +2775,10 @@ func TestSelectAdjacentBothDirections(t *testing.T) {
 	// Test adjacency in both directions:
 	// anchor at [5,8), item at [3,5) → item.end==5 == anchor.start==5 → adjacent
 	// anchor at [5,8), item at [8,11) → item.start==8 == anchor.end==8 → adjacent
-	itemBefore := leaf(Symbol(1), true, 3, 5)  // "ab"
-	anchor := leaf(Symbol(1), true, 5, 8)       // "anc" (conceptually)
-	itemAfter := leaf(Symbol(1), true, 8, 11)   // "hor" (conceptually)
-	itemFar := leaf(Symbol(1), true, 12, 14)    // far away
+	itemBefore := leaf(Symbol(1), true, 3, 5) // "ab"
+	anchor := leaf(Symbol(1), true, 5, 8)     // "anc" (conceptually)
+	itemAfter := leaf(Symbol(1), true, 8, 11) // "hor" (conceptually)
+	itemFar := leaf(Symbol(1), true, 12, 14)  // far away
 
 	captures := []QueryCapture{
 		{Name: "items", Node: itemBefore},

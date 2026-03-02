@@ -16,6 +16,9 @@ type Query struct {
 	rootCandidatesBySymbol map[Symbol][]int
 	rootCandidatesDense    [][]int
 	rootFallbackCandidates []int
+
+	disabledPatternIdx  map[int]struct{}
+	disabledCaptureName map[string]struct{}
 }
 
 // Pattern is a single top-level S-expression pattern in a query.
@@ -174,7 +177,7 @@ type QueryCursor struct {
 	lang   *Language
 	source []byte
 
-	worklist []*Node
+	worklist []queryCursorWorkItem
 
 	hasByteRange bool
 	startByte    uint32
@@ -185,6 +188,7 @@ type QueryCursor struct {
 	endPoint      Point
 
 	currentNode       *Node
+	currentNodeDepth  uint32
 	currentCandidates []int
 	candidateIdx      int
 
@@ -192,7 +196,20 @@ type QueryCursor struct {
 	pendingCaptures   []QueryCapture
 	pendingCaptureIdx int
 
+	matchLimit        uint32
+	matchCount        uint32
+	limitProbePending bool
+	didExceedMatchLim bool
+
+	hasMaxStartDepth bool
+	maxStartDepth    uint32
+
 	done bool
+}
+
+type queryCursorWorkItem struct {
+	node  *Node
+	depth uint32
 }
 
 // NewQuery compiles query source (tree-sitter .scm format) against a language.
@@ -238,7 +255,7 @@ func (q *Query) Exec(node *Node, lang *Language, source []byte) *QueryCursor {
 		source: source,
 	}
 	if node != nil {
-		c.worklist = append(c.worklist, node)
+		c.worklist = append(c.worklist, queryCursorWorkItem{node: node, depth: 0})
 	}
 	return c
 }
@@ -261,6 +278,36 @@ func (c *QueryCursor) SetPointRange(startPoint, endPoint Point) {
 	c.hasPointRange = true
 	c.startPoint = startPoint
 	c.endPoint = endPoint
+}
+
+// SetMatchLimit sets the maximum number of matches this cursor can return.
+// A limit of 0 means unlimited.
+func (c *QueryCursor) SetMatchLimit(limit uint32) {
+	if c == nil {
+		return
+	}
+	c.matchLimit = limit
+	c.didExceedMatchLim = false
+	c.limitProbePending = limit > 0 && c.matchCount >= limit
+}
+
+// DidExceedMatchLimit reports whether query execution had additional matches
+// beyond the configured match limit.
+func (c *QueryCursor) DidExceedMatchLimit() bool {
+	if c == nil {
+		return false
+	}
+	return c.didExceedMatchLim
+}
+
+// SetMaxStartDepth limits the depth at which new matches can begin.
+// Depth 0 means only the starting node passed to Exec.
+func (c *QueryCursor) SetMaxStartDepth(depth uint32) {
+	if c == nil {
+		return
+	}
+	c.hasMaxStartDepth = true
+	c.maxStartDepth = depth
 }
 
 func (c *QueryCursor) nodeIntersectsRanges(n *Node) bool {
@@ -436,15 +483,45 @@ func (c *QueryCursor) NextMatch() (QueryMatch, bool) {
 	if c == nil || c.done || c.query == nil || c.lang == nil {
 		return QueryMatch{}, false
 	}
-	q := c.query
-	if q.rootCandidatesBySymbol == nil && q.rootFallbackCandidates == nil {
-		q.buildRootPatternIndex()
-	}
 
 	// If callers mix NextCapture and NextMatch, NextMatch advances at match
 	// granularity and discards any partially-consumed capture buffer.
 	c.pendingCaptures = nil
 	c.pendingCaptureIdx = 0
+
+	if c.matchLimit == 0 {
+		return c.nextMatchRaw()
+	}
+
+	if c.matchCount < c.matchLimit {
+		m, ok := c.nextMatchRaw()
+		if !ok {
+			return QueryMatch{}, false
+		}
+		c.matchCount++
+		if c.matchCount == c.matchLimit {
+			c.limitProbePending = true
+		}
+		return m, true
+	}
+
+	if c.limitProbePending {
+		_, ok := c.nextMatchRaw()
+		c.didExceedMatchLim = ok
+		c.limitProbePending = false
+	}
+	c.done = true
+	return QueryMatch{}, false
+}
+
+func (c *QueryCursor) nextMatchRaw() (QueryMatch, bool) {
+	if c == nil || c.done || c.query == nil || c.lang == nil {
+		return QueryMatch{}, false
+	}
+	q := c.query
+	if q.rootCandidatesBySymbol == nil && q.rootFallbackCandidates == nil {
+		q.buildRootPatternIndex()
+	}
 
 	for {
 		if c.currentNode == nil {
@@ -454,28 +531,43 @@ func (c *QueryCursor) NextMatch() (QueryMatch, bool) {
 			}
 
 			// Pop next node in DFS order.
-			n := c.worklist[len(c.worklist)-1]
+			item := c.worklist[len(c.worklist)-1]
 			c.worklist = c.worklist[:len(c.worklist)-1]
+			n := item.node
+			depth := item.depth
 			if !c.nodeIntersectsRanges(n) {
 				continue
 			}
 
+			if c.hasMaxStartDepth && depth > c.maxStartDepth {
+				continue
+			}
+
 			// Push children in reverse order so leftmost is visited first.
-			children := n.Children()
-			for i := len(children) - 1; i >= 0; i-- {
-				if c.nodeIntersectsRanges(children[i]) {
-					c.worklist = append(c.worklist, children[i])
+			if !c.hasMaxStartDepth || depth < c.maxStartDepth {
+				children := n.Children()
+				for i := len(children) - 1; i >= 0; i-- {
+					if c.nodeIntersectsRanges(children[i]) {
+						c.worklist = append(c.worklist, queryCursorWorkItem{
+							node:  children[i],
+							depth: depth + 1,
+						})
+					}
 				}
 			}
 
 			c.currentNode = n
-			c.currentCandidates = q.rootPatternCandidates(n.Symbol())
+			c.currentNodeDepth = depth
+			c.currentCandidates = q.rootPatternCandidates(c.lang.PublicSymbol(n.Symbol()))
 			c.candidateIdx = 0
 		}
 
 		for c.candidateIdx < len(c.currentCandidates) {
 			pi := c.currentCandidates[c.candidateIdx]
 			c.candidateIdx++
+			if q.isPatternDisabled(pi) {
+				continue
+			}
 			pat := q.patterns[pi]
 			if caps, ok := q.matchPattern(&pat, c.currentNode, c.lang, c.source); ok {
 				return QueryMatch{
@@ -487,6 +579,7 @@ func (c *QueryCursor) NextMatch() (QueryMatch, bool) {
 
 		// Exhausted candidates for this node; advance to the next node.
 		c.currentNode = nil
+		c.currentNodeDepth = 0
 		c.currentCandidates = nil
 		c.candidateIdx = 0
 	}
@@ -553,6 +646,49 @@ func (q *Query) PatternCount() int {
 // CaptureNames returns the list of unique capture names used in the query.
 func (q *Query) CaptureNames() []string {
 	return q.captures
+}
+
+// DisableCapture removes captures with the given name from future query
+// results. Matching behavior is unchanged; only returned captures are filtered.
+func (q *Query) DisableCapture(name string) {
+	if q == nil || name == "" {
+		return
+	}
+	if q.disabledCaptureName == nil {
+		q.disabledCaptureName = make(map[string]struct{})
+	}
+	q.disabledCaptureName[name] = struct{}{}
+}
+
+// DisablePattern disables a pattern by index.
+func (q *Query) DisablePattern(patternIndex uint32) {
+	if q == nil {
+		return
+	}
+	idx := int(patternIndex)
+	if idx < 0 || idx >= len(q.patterns) {
+		return
+	}
+	if q.disabledPatternIdx == nil {
+		q.disabledPatternIdx = make(map[int]struct{})
+	}
+	q.disabledPatternIdx[idx] = struct{}{}
+}
+
+func (q *Query) isCaptureDisabled(name string) bool {
+	if q == nil || q.disabledCaptureName == nil {
+		return false
+	}
+	_, disabled := q.disabledCaptureName[name]
+	return disabled
+}
+
+func (q *Query) isPatternDisabled(patternIndex int) bool {
+	if q == nil || q.disabledPatternIdx == nil {
+		return false
+	}
+	_, disabled := q.disabledPatternIdx[patternIndex]
+	return disabled
 }
 
 // SetValues returns the values of a #set! directive with the given key

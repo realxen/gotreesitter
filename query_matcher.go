@@ -44,7 +44,8 @@ func (q *Query) matchSteps(steps []QueryStep, stepIdx int, node *Node, lang *Lan
 
 	// Collect child step indices at childDepth (stop when we see a step
 	// at a depth <= step.depth, meaning it belongs to a sibling/ancestor).
-	var childSteps []queryChildStepInfo
+	var childStepsBuf [16]queryChildStepInfo
+	childSteps := childStepsBuf[:0]
 	for i := childStart; i < len(steps); i++ {
 		if steps[i].depth <= step.depth {
 			break
@@ -62,6 +63,9 @@ func (q *Query) matchSteps(steps []QueryStep, stepIdx int, node *Node, lang *Lan
 func (q *Query) appendCaptureIDs(ids []int, legacyID int, node *Node, captures *[]QueryCapture) {
 	if len(ids) > 0 {
 		for _, captureID := range ids {
+			if q.isCaptureDisabled(q.captures[captureID]) {
+				continue
+			}
 			*captures = append(*captures, QueryCapture{
 				Name: q.captures[captureID],
 				Node: node,
@@ -70,6 +74,9 @@ func (q *Query) appendCaptureIDs(ids []int, legacyID int, node *Node, captures *
 		return
 	}
 	if legacyID >= 0 {
+		if q.isCaptureDisabled(q.captures[legacyID]) {
+			return
+		}
 		*captures = append(*captures, QueryCapture{
 			Name: q.captures[legacyID],
 			Node: node,
@@ -141,7 +148,13 @@ func (q *Query) matchChildSteps(
 	captures *[]QueryCapture,
 ) bool {
 	children := parent.Children()
-	namedPosByIndex := make([]int, len(children))
+	var namedPosByIndexBuf [64]int
+	var namedPosByIndex []int
+	if len(children) <= len(namedPosByIndexBuf) {
+		namedPosByIndex = namedPosByIndexBuf[:len(children)]
+	} else {
+		namedPosByIndex = make([]int, len(children))
+	}
 	namedPos := 0
 	for i, child := range children {
 		if child != nil && child.IsNamed() {
@@ -313,7 +326,7 @@ func (q *Query) matchChildStepsRecursive(
 
 func (q *Query) matchAlternationStep(step *QueryStep, node *Node, lang *Language, source []byte, captures *[]QueryCapture) bool {
 	hasStepCaptures := len(step.captureIDs) > 0 || step.captureID >= 0
-	nodeSymbol := node.Symbol()
+	nodeSymbol := lang.PublicSymbol(node.Symbol())
 	nodeNamed := node.IsNamed()
 	var nodeType string
 	nodeTypeLoaded := false
@@ -430,7 +443,7 @@ func (q *Query) nodeMatchesStep(step *QueryStep, node *Node, lang *Language) boo
 			if len(idx.wildcard) > 0 {
 				return true
 			}
-			if len(idx.bySymbolNamed[alternationSymbolNamedKey(node.Symbol(), node.IsNamed())]) > 0 {
+			if len(idx.bySymbolNamed[alternationSymbolNamedKey(lang.PublicSymbol(node.Symbol()), node.IsNamed())]) > 0 {
 				return true
 			}
 			if !node.IsNamed() && len(idx.byText) > 0 {
@@ -458,8 +471,10 @@ func (q *Query) nodeMatchesStep(step *QueryStep, node *Node, lang *Language) boo
 		return true
 	}
 
-	// Symbol matching.
-	if node.Symbol() != step.symbol {
+	// Symbol matching — use public symbol to handle aliases.
+	// Multiple internal symbols may share the same visible name (e.g.
+	// HTML's _start_tag_name and _end_tag_name both aliased to "tag_name").
+	if lang.PublicSymbol(node.Symbol()) != step.symbol {
 		return false
 	}
 
@@ -496,7 +511,7 @@ func alternativeMatchesNode(alt alternativeSymbol, node *Node, lang *Language) b
 		return !node.IsNamed() && node.Type(lang) == alt.textMatch
 	}
 
-	return node.Symbol() == alt.symbol && node.IsNamed() == alt.isNamed
+	return lang.PublicSymbol(node.Symbol()) == alt.symbol && node.IsNamed() == alt.isNamed
 }
 
 func alternativeMatchesNodeCached(
@@ -525,5 +540,5 @@ func alternativeMatchesNodeCached(
 		return *nodeType == alt.textMatch
 	}
 
-	return nodeSymbol == alt.symbol && nodeNamed == alt.isNamed
+	return lang.PublicSymbol(nodeSymbol) == alt.symbol && nodeNamed == alt.isNamed
 }
