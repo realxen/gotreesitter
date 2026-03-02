@@ -31,27 +31,12 @@ var paritySkips = map[string]parityMeta{
 	// Keep this map for explicitly known structural mismatches.
 	// Parse-support-specific skips (e.g. missing scanners) should not live here.
 	//
-	// Newly discovered from expanding parity to all 206 languages.
-	// These have real smoke samples but structural parse divergences.
-	"authzed":      {skipReason: "structural parse divergence (custom token source)"},
-	"desktop":      {skipReason: "structural parse divergence"},
-	"disassembly":  {skipReason: "structural parse divergence"},
-	"doxygen":      {skipReason: "structural parse divergence"},
-	"earthfile":    {skipReason: "structural parse divergence"},
-	"editorconfig": {skipReason: "structural parse divergence"},
-	"gdscript":     {skipReason: "structural parse divergence"},
-	"git_config":   {skipReason: "structural parse divergence"},
-	"gomod":        {skipReason: "structural parse divergence"},
-	"haxe":         {skipReason: "structural parse divergence"},
-	"hyprlang":     {skipReason: "structural parse divergence"},
-	"ledger":       {skipReason: "structural parse divergence"},
-	"matlab":       {skipReason: "structural parse divergence"},
-	"ninja":        {skipReason: "structural parse divergence"},
-	"prolog":       {skipReason: "structural parse divergence"},
-	"tlaplus":      {skipReason: "structural parse divergence"},
-	"todotxt":      {skipReason: "structural parse divergence (Go produces error nodes)"},
-	"uxntal":       {skipReason: "structural parse divergence"},
-	"vimdoc":       {skipReason: "structural parse divergence"},
+	// Remaining structural skip backlog from expanded all-language parity.
+	// These have real smoke samples and still diverge from C runtime shape.
+	"doxygen":  {skipReason: "structural parse divergence"},
+	"gdscript": {skipReason: "structural parse divergence"},
+	"haxe":     {skipReason: "structural parse divergence"},
+	"vimdoc":   {skipReason: "structural parse divergence"},
 }
 
 type parityCase struct {
@@ -400,13 +385,8 @@ func parityReferenceSkipReason(err error) string {
 }
 
 func normalizedSource(name, src string) []byte {
-	switch name {
-	case "yaml", "swift", "ini", "make":
-		return []byte(src)
-	}
-	// Trim one trailing newline so both runtimes compare syntax tree shape
-	// independent of final-line extra-token representation.
-	return []byte(strings.TrimSuffix(src, "\n"))
+	_ = name
+	return []byte(src)
 }
 
 // safeEditOffset chooses one insertion offset for a single-byte whitespace edit.

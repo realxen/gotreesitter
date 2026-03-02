@@ -26,7 +26,16 @@ type dfaTokenSource struct {
 	extZeroPos   int
 	extZeroState StateID
 	extZeroTried []bool
+
+	// Zero-width token guard for all token kinds (DFA + external).
+	// Some grammars can emit endless zero-width marker/token sequences at the
+	// same byte offset (often alternating symbols/states). Cap consecutive
+	// emissions so tokenization always makes forward progress.
+	zeroWidthPos   int
+	zeroWidthCount int
 }
+
+const maxConsecutiveZeroWidthTokens = 4
 
 func (d *dfaTokenSource) Close() {
 	if d.language == nil || d.language.ExternalScanner == nil || d.externalPayload == nil {
@@ -46,7 +55,64 @@ func (d *dfaTokenSource) Next() Token {
 	if perfCountersEnabled {
 		startPos = d.lexer.pos
 	}
-	if tok, ok := d.nextExternalToken(); ok {
+	for {
+		tok := Token{}
+		tokenFromExternal := false
+		if extTok, ok := d.nextExternalToken(); ok {
+			tok = extTok
+			tokenFromExternal = true
+		} else {
+			lexState := uint16(0)
+			if int(d.state) < len(d.language.LexModes) {
+				lexState = d.language.LexModes[d.state].LexState
+			}
+			tok = d.lexer.Next(lexState)
+			tok = d.promoteKeyword(tok)
+		}
+
+		// Some grammars can emit zero-width non-EOF tokens that have no parse
+		// action in any live GLR state. If returned as-is, parser recovery can
+		// loop forever at the same byte. Skip one rune (or coerce EOF at end)
+		// so the token source itself always guarantees forward progress.
+		if tok.Symbol != 0 && tok.EndByte <= tok.StartByte && !d.hasAnyActionForSymbol(tok.Symbol) {
+			if d.lexer.pos < len(d.lexer.source) {
+				if DebugDFA.Load() {
+					fmt.Printf("  ZERO-WIDTH skip sym=%d at pos=%d state=%d\n", tok.Symbol, d.lexer.pos, d.state)
+				}
+				d.extZeroPos = -1
+				d.lexer.skipOneRune()
+				continue
+			}
+			tok = d.eofTokenAtLexerPos()
+		}
+
+		if tok.Symbol != 0 && tok.EndByte <= tok.StartByte {
+			if d.zeroWidthPos == d.lexer.pos {
+				d.zeroWidthCount++
+			} else {
+				d.zeroWidthPos = d.lexer.pos
+				d.zeroWidthCount = 1
+			}
+			if d.zeroWidthCount > maxConsecutiveZeroWidthTokens {
+				if d.lexer.pos < len(d.lexer.source) {
+					if DebugDFA.Load() {
+						fmt.Printf("  ZERO-WIDTH cap skip at pos=%d state=%d sym=%d\n", d.lexer.pos, d.state, tok.Symbol)
+					}
+					d.extZeroPos = -1
+					d.zeroWidthPos = -1
+					d.zeroWidthCount = 0
+					d.lexer.skipOneRune()
+					continue
+				}
+				tok = d.eofTokenAtLexerPos()
+				d.zeroWidthPos = -1
+				d.zeroWidthCount = 0
+			}
+		} else {
+			d.zeroWidthPos = -1
+			d.zeroWidthCount = 0
+		}
+
 		if perfCountersEnabled {
 			consumed := d.lexer.pos - startPos
 			if consumed < 0 {
@@ -59,32 +125,14 @@ func (d *dfaTokenSource) Next() Token {
 			if int(tok.Symbol) < len(d.language.SymbolNames) {
 				name = d.language.SymbolNames[tok.Symbol]
 			}
-			fmt.Printf("  EXT tok %d %s %d %d %s\n", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text)
+			prefix := "DFA"
+			if tokenFromExternal {
+				prefix = "EXT"
+			}
+			fmt.Printf("  %s tok %d %s %d %d %s state=%d\n", prefix, tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, d.state)
 		}
 		return tok
 	}
-
-	lexState := uint16(0)
-	if int(d.state) < len(d.language.LexModes) {
-		lexState = d.language.LexModes[d.state].LexState
-	}
-	tok := d.lexer.Next(lexState)
-	tok = d.promoteKeyword(tok)
-	if perfCountersEnabled {
-		consumed := d.lexer.pos - startPos
-		if consumed < 0 {
-			consumed = 0
-		}
-		perfRecordLexed(consumed, 1)
-	}
-	if DebugDFA.Load() {
-		name := ""
-		if int(tok.Symbol) < len(d.language.SymbolNames) {
-			name = d.language.SymbolNames[tok.Symbol]
-		}
-		fmt.Printf("  DFA tok %d %s %d %d %s state=%d lexState=%d\n", tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, d.state, lexState)
-	}
-	return tok
 }
 
 func (d *dfaTokenSource) SetParserState(state StateID) {
@@ -93,6 +141,34 @@ func (d *dfaTokenSource) SetParserState(state StateID) {
 
 func (d *dfaTokenSource) SetGLRStates(states []StateID) {
 	d.glrStates = states
+}
+
+func (d *dfaTokenSource) hasAnyActionForSymbol(sym Symbol) bool {
+	if d == nil || d.lookupActionIndex == nil || sym == 0 {
+		return false
+	}
+	if len(d.glrStates) == 0 {
+		return d.lookupActionIndex(d.state, sym) != 0
+	}
+	for _, st := range d.glrStates {
+		if d.lookupActionIndex(st, sym) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *dfaTokenSource) eofTokenAtLexerPos() Token {
+	if d == nil || d.lexer == nil {
+		return Token{}
+	}
+	pt := Point{Row: d.lexer.row, Column: d.lexer.col}
+	return Token{
+		StartByte:  uint32(d.lexer.pos),
+		EndByte:    uint32(d.lexer.pos),
+		StartPoint: pt,
+		EndPoint:   pt,
+	}
 }
 
 func (d *dfaTokenSource) SkipToByte(offset uint32) Token {
@@ -224,7 +300,12 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 	}
 
 	if d.language.ExternalScanner == nil {
-		return d.syntheticExternalToken(valid)
+		tok, ok := d.syntheticExternalToken(valid)
+		if !ok {
+			return Token{}, false
+		}
+		d.trackZeroWidthExternalToken(tok)
+		return tok, true
 	}
 
 	el := newExternalLexer(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
@@ -236,6 +317,18 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 		return Token{}, false
 	}
 
+	d.trackZeroWidthExternalToken(tok)
+
+	d.lexer.pos = int(tok.EndByte)
+	d.lexer.row = tok.EndPoint.Row
+	d.lexer.col = tok.EndPoint.Column
+	return tok, true
+}
+
+func (d *dfaTokenSource) trackZeroWidthExternalToken(tok Token) {
+	if d == nil || d.language == nil {
+		return
+	}
 	// Track zero-width tokens for loop prevention.
 	if tok.EndByte <= tok.StartByte {
 		if d.lexer.pos != d.extZeroPos || d.state != d.extZeroState {
@@ -260,15 +353,10 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 				break
 			}
 		}
-	} else {
-		// Non-zero-width token: reset the tried set since position advanced.
-		d.extZeroPos = -1
+		return
 	}
-
-	d.lexer.pos = int(tok.EndByte)
-	d.lexer.row = tok.EndPoint.Row
-	d.lexer.col = tok.EndPoint.Column
-	return tok, true
+	// Non-zero-width token: clear the zero-width loop state.
+	d.extZeroPos = -1
 }
 
 const (
