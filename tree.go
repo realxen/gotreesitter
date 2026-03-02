@@ -705,6 +705,21 @@ func (t *Tree) Release() {
 // RootNode returns the tree's root node.
 func (t *Tree) RootNode() *Node { return t.root }
 
+// RootNodeWithOffset returns a copy of the root node with all spans shifted by
+// the provided byte and point offsets.
+//
+// This mirrors tree-sitter C's root-node-with-offset behavior for callers that
+// need to embed a parsed tree at a larger document offset.
+func (t *Tree) RootNodeWithOffset(offsetBytes uint32, offsetExtent Point) *Node {
+	if t == nil || t.root == nil {
+		return nil
+	}
+	if offsetBytes == 0 && offsetExtent == (Point{}) {
+		return t.root
+	}
+	return cloneTreeNodesWithOffset(t.root, offsetBytes, offsetExtent)
+}
+
 // Source returns the original source text.
 func (t *Tree) Source() []byte { return t.source }
 
@@ -792,6 +807,76 @@ func cloneTreeNodesIntoArena(root *Node, arena *nodeArena) *Node {
 				newChild.parent = newNode
 				newChild.childIndex = i
 				children[i] = newChild
+				stack = append(stack, clonePair{old: oldChild, new: newChild})
+			}
+		}
+	}
+
+	return newRoot
+}
+
+func cloneTreeNodesWithOffset(root *Node, offsetBytes uint32, offsetExtent Point) *Node {
+	if root == nil {
+		return nil
+	}
+
+	type clonePair struct {
+		old *Node
+		new *Node
+	}
+
+	baseRow := root.startPoint.Row
+	offsetPoint := func(p Point) Point {
+		originalRow := p.Row
+		p.Row = addUint32Delta(p.Row, int64(offsetExtent.Row))
+		// When adding a multi-line prefix, only nodes on the original first row
+		// of this tree receive the column offset. Rows after that keep columns.
+		if offsetExtent.Row == 0 || originalRow == baseRow {
+			p.Column = addUint32Delta(p.Column, int64(offsetExtent.Column))
+		}
+		return p
+	}
+
+	cloneNode := func(src *Node) *Node {
+		dst := &Node{}
+		*dst = *src
+		dst.startByte = addUint32Delta(src.startByte, int64(offsetBytes))
+		dst.endByte = addUint32Delta(src.endByte, int64(offsetBytes))
+		dst.startPoint = offsetPoint(src.startPoint)
+		dst.endPoint = offsetPoint(src.endPoint)
+		dst.children = nil
+		dst.fieldIDs = nil
+		dst.parent = nil
+		dst.childIndex = -1
+		dst.ownerArena = nil
+		return dst
+	}
+
+	newRoot := cloneNode(root)
+	stack := []clonePair{{old: root, new: newRoot}}
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		pair := stack[last]
+		stack = stack[:last]
+
+		oldNode := pair.old
+		newNode := pair.new
+
+		if n := len(oldNode.fieldIDs); n > 0 {
+			newNode.fieldIDs = make([]FieldID, n)
+			copy(newNode.fieldIDs, oldNode.fieldIDs)
+		}
+
+		if n := len(oldNode.children); n > 0 {
+			newNode.children = make([]*Node, n)
+			for i, oldChild := range oldNode.children {
+				if oldChild == nil {
+					continue
+				}
+				newChild := cloneNode(oldChild)
+				newChild.parent = newNode
+				newChild.childIndex = i
+				newNode.children[i] = newChild
 				stack = append(stack, clonePair{old: oldChild, new: newChild})
 			}
 		}

@@ -378,6 +378,62 @@ func TestTreeCopySurvivesOriginalRelease(t *testing.T) {
 	}
 }
 
+func TestTreeRootNodeWithOffsetShiftsDescendants(t *testing.T) {
+	lang := testLanguage()
+	a := NewLeafNode(Symbol(1), true, 1, 3, Point{Row: 0, Column: 1}, Point{Row: 0, Column: 3})
+	b := NewLeafNode(Symbol(2), true, 4, 8, Point{Row: 1, Column: 0}, Point{Row: 1, Column: 4})
+	root := NewParentNode(Symbol(3), true, []*Node{a, b}, nil, 0)
+	tree := NewTree(root, []byte("abcdefgh"), lang)
+
+	offset := tree.RootNodeWithOffset(10, Point{Row: 3, Column: 7})
+	if offset == nil {
+		t.Fatal("RootNodeWithOffset returned nil")
+	}
+	if offset == tree.RootNode() {
+		t.Fatal("RootNodeWithOffset should return a distinct node for non-zero offset")
+	}
+
+	if got, want := offset.StartByte(), uint32(11); got != want {
+		t.Fatalf("root start byte: got %d want %d", got, want)
+	}
+	if got, want := offset.EndByte(), uint32(18); got != want {
+		t.Fatalf("root end byte: got %d want %d", got, want)
+	}
+	if got, want := offset.StartPoint(), (Point{Row: 3, Column: 8}); got != want {
+		t.Fatalf("root start point: got %+v want %+v", got, want)
+	}
+
+	first := offset.Child(0)
+	if first == nil {
+		t.Fatal("offset first child nil")
+	}
+	if got, want := first.StartPoint(), (Point{Row: 3, Column: 8}); got != want {
+		t.Fatalf("first child start point: got %+v want %+v", got, want)
+	}
+	if got, want := first.EndPoint(), (Point{Row: 3, Column: 10}); got != want {
+		t.Fatalf("first child end point: got %+v want %+v", got, want)
+	}
+
+	second := offset.Child(1)
+	if second == nil {
+		t.Fatal("offset second child nil")
+	}
+	if got, want := second.StartPoint(), (Point{Row: 4, Column: 0}); got != want {
+		t.Fatalf("second child start point: got %+v want %+v", got, want)
+	}
+	if got, want := second.EndPoint(), (Point{Row: 4, Column: 4}); got != want {
+		t.Fatalf("second child end point: got %+v want %+v", got, want)
+	}
+
+	// Original tree must remain unchanged.
+	if got, want := tree.RootNode().StartByte(), uint32(1); got != want {
+		t.Fatalf("original root start byte mutated: got %d want %d", got, want)
+	}
+	if got, want := tree.RootNode().StartPoint(), (Point{Row: 0, Column: 1}); got != want {
+		t.Fatalf("original root start point mutated: got %+v want %+v", got, want)
+	}
+}
+
 func TestDescendantForByteRange(t *testing.T) {
 	lang := testLanguage()
 	left := NewLeafNode(Symbol(1), true, 0, 3, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 3})
