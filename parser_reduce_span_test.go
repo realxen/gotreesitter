@@ -2,7 +2,9 @@ package gotreesitter
 
 import "testing"
 
-func TestExtendParentSpanToWindowExtendsBothSides(t *testing.T) {
+func TestExtendParentSpanCoversInvisibleLeafChild(t *testing.T) {
+	// Invisible non-extra leaf child [20-22] dropped by buildReduceChildren
+	// should extend parent endByte from 20 to 22 (contiguous).
 	parent := NewParentNode(3, true, nil, nil, 0)
 	parent.startByte = 10
 	parent.endByte = 20
@@ -12,31 +14,84 @@ func TestExtendParentSpanToWindowExtendsBothSides(t *testing.T) {
 	leadingExtra := NewLeafNode(1, false, 8, 9, Point{Row: 1, Column: 8}, Point{Row: 1, Column: 9})
 	leadingExtra.isExtra = true
 	core := NewLeafNode(2, true, 10, 20, Point{Row: 1, Column: 10}, Point{Row: 1, Column: 20})
-	trailingExtra := NewLeafNode(1, false, 20, 24, Point{Row: 1, Column: 20}, Point{Row: 1, Column: 24})
-	trailingExtra.isExtra = true
+	invisible := NewLeafNode(4, false, 20, 22, Point{Row: 1, Column: 20}, Point{Row: 1, Column: 22})
 
 	entries := []stackEntry{
 		{state: 0, node: leadingExtra},
 		{state: 0, node: core},
-		{state: 0, node: trailingExtra},
+		{state: 0, node: invisible},
 	}
-	extendParentSpanToWindow(parent, entries, 0, len(entries), []*Node{trailingExtra}, false)
+	meta := []SymbolMetadata{
+		{}, {}, {Visible: true}, {}, {Visible: false},
+	}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
 
 	if got, want := parent.startByte, uint32(8); got != want {
 		t.Fatalf("parent.startByte = %d, want %d", got, want)
 	}
-	if got, want := parent.endByte, uint32(24); got != want {
+	if got, want := parent.endByte, uint32(22); got != want {
 		t.Fatalf("parent.endByte = %d, want %d", got, want)
-	}
-	if parent.startPoint != (Point{Row: 1, Column: 8}) {
-		t.Fatalf("parent.startPoint = %+v, want {Row:1 Column:8}", parent.startPoint)
-	}
-	if parent.endPoint != (Point{Row: 1, Column: 24}) {
-		t.Fatalf("parent.endPoint = %+v, want {Row:1 Column:24}", parent.endPoint)
 	}
 }
 
-func TestExtendParentSpanToWindowNoTrailingExtras(t *testing.T) {
+func TestExtendParentSpanSkipsDiscontiguousPhantom(t *testing.T) {
+	// A zero-width invisible entry AFTER the parent span (like javascript
+	// _automatic_semicolon at [27-27] after statement_block [13-26])
+	// must NOT extend the parent span.
+	parent := NewParentNode(3, true, nil, nil, 0)
+	parent.startByte = 13
+	parent.endByte = 26
+	parent.startPoint = Point{Row: 1, Column: 13}
+	parent.endPoint = Point{Row: 1, Column: 26}
+
+	core := NewLeafNode(2, true, 13, 26, Point{Row: 1, Column: 13}, Point{Row: 1, Column: 26})
+	phantom := NewLeafNode(4, false, 27, 27, Point{Row: 1, Column: 27}, Point{Row: 1, Column: 27})
+
+	entries := []stackEntry{
+		{state: 0, node: core},
+		{state: 0, node: phantom},
+	}
+	meta := []SymbolMetadata{
+		{}, {}, {Visible: true}, {}, {Visible: false},
+	}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
+
+	if got, want := parent.endByte, uint32(26); got != want {
+		t.Fatalf("parent.endByte = %d, want %d (phantom should not extend)", got, want)
+	}
+}
+
+func TestExtendParentSpanCoversInvisibleWithChildren(t *testing.T) {
+	// An invisible node WITH children whose span exceeds its children's span
+	// (due to nested invisible leaf extension) should still extend the parent.
+	parent := NewParentNode(3, true, nil, nil, 0)
+	parent.startByte = 5
+	parent.endByte = 14
+	parent.startPoint = Point{Row: 1, Column: 5}
+	parent.endPoint = Point{Row: 1, Column: 14}
+
+	invisibleWithKids := NewParentNode(4, false, []*Node{
+		NewLeafNode(5, true, 5, 14, Point{Row: 1, Column: 5}, Point{Row: 1, Column: 14}),
+	}, nil, 0)
+	invisibleWithKids.startByte = 5
+	invisibleWithKids.endByte = 15
+	invisibleWithKids.startPoint = Point{Row: 1, Column: 5}
+	invisibleWithKids.endPoint = Point{Row: 1, Column: 15}
+
+	entries := []stackEntry{
+		{state: 0, node: invisibleWithKids},
+	}
+	meta := []SymbolMetadata{
+		{}, {}, {}, {}, {Visible: false}, {Visible: true},
+	}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
+
+	if got, want := parent.endByte, uint32(15); got != want {
+		t.Fatalf("parent.endByte = %d, want %d", got, want)
+	}
+}
+
+func TestExtendParentSpanNoOp(t *testing.T) {
 	parent := NewParentNode(3, true, nil, nil, 0)
 	parent.startByte = 10
 	parent.endByte = 20
@@ -45,36 +100,13 @@ func TestExtendParentSpanToWindowNoTrailingExtras(t *testing.T) {
 
 	core := NewLeafNode(2, true, 10, 20, Point{Row: 2, Column: 10}, Point{Row: 2, Column: 20})
 	entries := []stackEntry{{state: 0, node: core}}
-	extendParentSpanToWindow(parent, entries, 0, len(entries), nil, false)
+	meta := []SymbolMetadata{{}, {}, {Visible: true}}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta)
 
 	if got, want := parent.startByte, uint32(10); got != want {
 		t.Fatalf("parent.startByte = %d, want %d", got, want)
 	}
 	if got, want := parent.endByte, uint32(20); got != want {
-		t.Fatalf("parent.endByte = %d, want %d", got, want)
-	}
-}
-
-func TestExtendParentSpanToWindowIncludesInvisibleWindowWhenEnabled(t *testing.T) {
-	parent := NewParentNode(3, true, nil, nil, 0)
-	parent.startByte = 16
-	parent.endByte = 18
-	parent.startPoint = Point{Row: 1, Column: 16}
-	parent.endPoint = Point{Row: 1, Column: 18}
-
-	invisible := NewLeafNode(4, false, 13, 16, Point{Row: 1, Column: 13}, Point{Row: 1, Column: 16})
-	core := NewLeafNode(5, true, 16, 18, Point{Row: 1, Column: 16}, Point{Row: 1, Column: 18})
-	entries := []stackEntry{
-		{state: 0, node: invisible},
-		{state: 0, node: core},
-	}
-
-	extendParentSpanToWindow(parent, entries, 0, len(entries), nil, true)
-
-	if got, want := parent.startByte, uint32(13); got != want {
-		t.Fatalf("parent.startByte = %d, want %d", got, want)
-	}
-	if got, want := parent.endByte, uint32(18); got != want {
 		t.Fatalf("parent.endByte = %d, want %d", got, want)
 	}
 }
