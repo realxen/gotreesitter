@@ -219,11 +219,17 @@ func TestDetectLanguageByName(t *testing.T) {
 }
 
 func TestDisplayName(t *testing.T) {
-	// With empty grammarDisplayNames, falls back to title-case.
+	// Linguist-mapped name.
 	entry := &LangEntry{Name: "c_sharp"}
 	got := DisplayName(entry)
-	if got != "C Sharp" {
-		t.Errorf("DisplayName(c_sharp) fallback = %q, want %q", got, "C Sharp")
+	if got != "C#" {
+		t.Errorf("DisplayName(c_sharp) = %q, want %q", got, "C#")
+	}
+	// Fallback to title-case for unmapped names.
+	entry2 := &LangEntry{Name: "some_unknown_lang"}
+	got2 := DisplayName(entry2)
+	if got2 != "Some Unknown Lang" {
+		t.Errorf("DisplayName(some_unknown_lang) fallback = %q, want %q", got2, "Some Unknown Lang")
 	}
 	if DisplayName(nil) != "" {
 		t.Error("DisplayName(nil) should return empty string")
