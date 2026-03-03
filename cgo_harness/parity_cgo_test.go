@@ -122,12 +122,6 @@ var curatedStructuralLanguages = map[string]bool{
 	"zig":        true,
 }
 
-// curatedHighlightLanguages mirrors structural parity breadth (top-set) and
-// uses per-language no-regression thresholds in parity_highlight_test.go.
-// Languages can still be skipped by the highlight parity runner when the
-// upstream C reference query does not compile for that grammar revision.
-var curatedHighlightLanguages = curatedStructuralLanguages
-
 var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangEntry, map[string]grammars.ParseSupport) {
 	entries := make(map[string]grammars.LangEntry)
 	for _, entry := range grammars.AllLanguages() {
@@ -139,6 +133,28 @@ var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangE
 		support[report.Name] = report
 	}
 	return entries, support
+}()
+
+// curatedHighlightLanguages scales independently of structural parity. Any
+// language with a dedicated smoke sample and shipped highlight query is part of
+// the merge-blocking highlight parity gate, as long as parsing is supported.
+// Divergence thresholds are controlled in parity_highlight_test.go.
+var curatedHighlightLanguages = func() map[string]bool {
+	out := make(map[string]bool, len(parityCases))
+	for _, tc := range parityCases {
+		if !hasDedicatedSample[tc.name] {
+			continue
+		}
+		entry, ok := parityEntriesByName[tc.name]
+		if !ok || strings.TrimSpace(entry.HighlightQuery) == "" {
+			continue
+		}
+		if report, ok := paritySupportByName[tc.name]; ok && report.Backend == grammars.ParseBackendUnsupported {
+			continue
+		}
+		out[tc.name] = true
+	}
+	return out
 }()
 
 var parityCompareFields = func() bool {
