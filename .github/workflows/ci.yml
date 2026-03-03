@@ -34,6 +34,60 @@ jobs:
           name: parity-log
           path: parity.log
 
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check linguist_gen.go freshness
+        run: |
+          set -euo pipefail
+          go run ./cmd/gen_linguist -manifest grammars/languages.manifest -out grammars/linguist_gen.go
+          if ! git diff --exit-code grammars/linguist_gen.go; then
+            echo "::error::grammars/linguist_gen.go is stale. Run: go run ./cmd/gen_linguist -manifest grammars/languages.manifest"
+            exit 1
+          fi
+
+      - name: Check grammar blob coverage matches lock
+        run: |
+          set -euo pipefail
+
+          # Extract grammar names from lock (skip comments and blanks).
+          lock_names=$(grep -v '^#' grammars/languages.lock | grep -v '^$' | awk '{print $1}' | sort)
+          lock_count=$(echo "$lock_names" | wc -l)
+
+          # Extract grammar names from .bin files.
+          blob_names=$(ls grammars/grammar_blobs/*.bin 2>/dev/null | xargs -I{} basename {} .bin | sort)
+          blob_count=$(echo "$blob_names" | wc -l)
+
+          # Extract grammar names from embedded_grammars_gen.go (blob references).
+          gen_names=$(grep -oP 'loadEmbeddedLanguage\("\K[^"]+(?=\.bin"\))' grammars/embedded_grammars_gen.go | sort)
+          gen_count=$(echo "$gen_names" | wc -l)
+
+          echo "lock: $lock_count | blobs: $blob_count | gen functions: $gen_count"
+
+          # Check blob files match lock entries.
+          missing_blobs=$(comm -23 <(echo "$lock_names") <(echo "$blob_names"))
+          if [ -n "$missing_blobs" ]; then
+            echo "::error::Grammar blobs missing for lock entries: $missing_blobs"
+            echo "Run: go run ./cmd/ts2go -manifest grammars/languages.lock -outdir ./grammars -package grammars"
+            exit 1
+          fi
+
+          orphan_blobs=$(comm -13 <(echo "$lock_names") <(echo "$blob_names"))
+          if [ -n "$orphan_blobs" ]; then
+            echo "::warning::Orphan blobs not in lock file: $orphan_blobs"
+          fi
+
+          if [ "$blob_count" -ne "$lock_count" ]; then
+            echo "::error::Blob count ($blob_count) != lock count ($lock_count)"
+            exit 1
+          fi
+
   parity-cgo:
     runs-on: ubuntu-latest
     steps:
