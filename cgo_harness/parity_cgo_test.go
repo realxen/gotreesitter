@@ -30,12 +30,6 @@ type parityMeta struct {
 var paritySkips = map[string]parityMeta{
 	// Keep this map for explicitly known structural mismatches.
 	// Parse-support-specific skips (e.g. missing scanners) should not live here.
-	//
-	// Remaining structural skip backlog from expanded all-language parity.
-	// These have real smoke samples and still diverge from C runtime shape.
-	"doxygen":  {skipReason: "structural parse divergence"},
-	"gdscript": {skipReason: "structural parse divergence"},
-	"vimdoc":   {skipReason: "structural parse divergence"},
 }
 
 type parityCase struct {
@@ -82,9 +76,11 @@ var curatedStructuralLanguages = map[string]bool{
 	"css":        true,
 	"dart":       true,
 	"d":          true,
+	"doxygen":    true,
 	"elixir":     true,
 	"elm":        true,
 	"erlang":     true,
+	"gdscript":   true,
 	"go":         true,
 	"gomod":      true,
 	"graphql":    true,
@@ -122,13 +118,14 @@ var curatedStructuralLanguages = map[string]bool{
 	"typescript": true,
 	"xml":        true,
 	"yaml":       true,
+	"vimdoc":     true,
 	"zig":        true,
 }
 
 // curatedHighlightLanguages mirrors structural parity breadth (top-set) and
 // uses per-language no-regression thresholds in parity_highlight_test.go.
-// Languages with no shipped highlight query (e.g. swift currently) are skipped
-// by the highlight parity runner.
+// Languages can still be skipped by the highlight parity runner when the
+// upstream C reference query does not compile for that grammar revision.
 var curatedHighlightLanguages = curatedStructuralLanguages
 
 var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangEntry, map[string]grammars.ParseSupport) {

@@ -106,7 +106,6 @@ var knownDegradedHighlight = map[string]highlightTolerance{
 	"tlaplus":       {cMissing: 1, goOnly: 2},
 	"todotxt":       {cMissing: 2},
 	"uxntal":        {cMissing: 4},
-	"zig":           {goOnly: 2},
 }
 
 // collectGoHighlightCaptures runs a highlight query against a Go parse tree

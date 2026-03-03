@@ -8,6 +8,10 @@ type queryChildStepInfo struct {
 // matchSteps matches a contiguous slice of steps starting at stepIdx
 // against the given node at the expected depth.
 func (q *Query) matchSteps(steps []QueryStep, stepIdx int, node *Node, lang *Language, source []byte, captures *[]QueryCapture) bool {
+	return q.matchStepsWithParent(steps, stepIdx, node, nil, -1, lang, source, captures)
+}
+
+func (q *Query) matchStepsWithParent(steps []QueryStep, stepIdx int, node *Node, parent *Node, childIdx int, lang *Language, source []byte, captures *[]QueryCapture) bool {
 	if stepIdx >= len(steps) {
 		return false
 	}
@@ -15,7 +19,7 @@ func (q *Query) matchSteps(steps []QueryStep, stepIdx int, node *Node, lang *Lan
 	step := &steps[stepIdx]
 
 	if len(step.alternatives) > 0 {
-		if !q.matchAlternationStep(step, node, lang, source, captures) {
+		if !q.matchAlternationStep(step, node, parent, childIdx, lang, source, captures) {
 			return false
 		}
 	} else {
@@ -250,7 +254,7 @@ func (q *Query) matchChildStepsRecursive(
 		for _, childIdx := range candidateIndices {
 			child := children[childIdx]
 			childCheckpoint := len(*captures)
-			if !q.matchStepWithRollback(steps, cs.stepIdx, child, lang, source, captures) {
+			if !q.matchStepWithRollbackAtParent(steps, cs.stepIdx, child, parent, childIdx, lang, source, captures) {
 				*captures = (*captures)[:childCheckpoint]
 				continue
 			}
@@ -319,7 +323,7 @@ func (q *Query) matchChildStepsRecursive(
 				child := children[childIdx]
 
 				childCheckpoint := len(*captures)
-				if !q.matchStepWithRollback(steps, cs.stepIdx, child, lang, source, captures) {
+				if !q.matchStepWithRollbackAtParent(steps, cs.stepIdx, child, parent, childIdx, lang, source, captures) {
 					*captures = (*captures)[:childCheckpoint]
 					continue
 				}
@@ -363,7 +367,7 @@ func (q *Query) matchChildStepsRecursive(
 	return false
 }
 
-func (q *Query) matchAlternationStep(step *QueryStep, node *Node, lang *Language, source []byte, captures *[]QueryCapture) bool {
+func (q *Query) matchAlternationStep(step *QueryStep, node *Node, parent *Node, childIdx int, lang *Language, source []byte, captures *[]QueryCapture) bool {
 	hasStepCaptures := len(step.captureIDs) > 0 || step.captureID >= 0
 	nodeSymbol := lang.PublicSymbol(node.Symbol())
 	nodeNamed := node.IsNamed()
@@ -404,7 +408,20 @@ func (q *Query) matchAlternationStep(step *QueryStep, node *Node, lang *Language
 				break
 			}
 
-			if q.matchAlternationBranch(step, &step.alternatives[nextAlt], node, lang, source, captures, hasStepCaptures) {
+			alt := &step.alternatives[nextAlt]
+			if !q.alternativeFieldMatches(alt, node, parent, childIdx, lang) {
+				switch nextSrc {
+				case 1:
+					iSym++
+				case 2:
+					iText++
+				case 3:
+					iWild++
+				}
+				continue
+			}
+
+			if q.matchAlternationBranch(step, alt, node, lang, source, captures, hasStepCaptures) {
 				return true
 			}
 
@@ -424,11 +441,47 @@ func (q *Query) matchAlternationStep(step *QueryStep, node *Node, lang *Language
 		if !alternativeMatchesNodeCached(alt, node, lang, nodeSymbol, nodeNamed, &nodeType, &nodeTypeLoaded) {
 			continue
 		}
+		if !q.alternativeFieldMatches(&alt, node, parent, childIdx, lang) {
+			continue
+		}
 		if q.matchAlternationBranch(step, &alt, node, lang, source, captures, hasStepCaptures) {
 			return true
 		}
 	}
 	return false
+}
+
+func (q *Query) alternativeFieldMatches(alt *alternativeSymbol, node *Node, parent *Node, childIdx int, lang *Language) bool {
+	if alt == nil || alt.field == 0 {
+		return true
+	}
+	if parent == nil || childIdx < 0 {
+		// Root-level field-constrained patterns (for example `field: (node)`) are
+		// matched against each candidate node and must resolve the real parent
+		// relationship at match time.
+		parent = node.Parent()
+		if parent == nil {
+			return false
+		}
+		childIdx = -1
+		for i, child := range parent.children {
+			if child == node {
+				childIdx = i
+				break
+			}
+		}
+		if childIdx < 0 {
+			return false
+		}
+	}
+	if int(alt.field) <= 0 || int(alt.field) >= len(lang.FieldNames) {
+		return false
+	}
+	fieldName := lang.FieldNames[alt.field]
+	if fieldName == "" {
+		return false
+	}
+	return parent.FieldNameForChild(childIdx, lang) == fieldName
 }
 
 func (q *Query) matchAlternationBranch(

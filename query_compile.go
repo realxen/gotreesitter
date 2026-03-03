@@ -403,6 +403,7 @@ func (p *queryParser) parseAlternationPattern(depth int, parentSymbolHint Symbol
 
 		var branchPat *Pattern
 		var err error
+		altField := FieldID(0)
 		if ch == '(' || ch == '[' || ch == '"' {
 			branchPat, err = p.parsePatternElement(depth, parentSymbolHint)
 		} else if isIdentStart(ch) {
@@ -416,6 +417,11 @@ func (p *queryParser) parseAlternationPattern(depth int, parentSymbolHint Symbol
 			if p.pos < len(p.input) && p.input[p.pos] == ':' {
 				p.pos++ // consume ':'
 				p.skipWhitespaceAndComments()
+				fieldID, fieldErr := p.resolveField(ident, parentSymbolHint, parentSymbolHint)
+				if fieldErr != nil {
+					return nil, fieldErr
+				}
+				altField = fieldID
 				branchPat, err = p.parsePatternElement(depth, parentSymbolHint)
 			} else {
 				branchPat, err = p.parseIdentifierPatternFromName(depth, ident)
@@ -434,10 +440,17 @@ func (p *queryParser) parseAlternationPattern(depth int, parentSymbolHint Symbol
 		alt := alternativeSymbol{
 			symbol:    root.symbol,
 			isNamed:   root.isNamed,
+			field:     altField,
 			textMatch: root.textMatch,
 			captureID: -1,
 		}
-		if len(branchPat.predicates) > 0 || len(branchPat.steps) > 1 {
+		if root.field != 0 {
+			alt.field = root.field
+			// Field constraints are evaluated at branch selection time; keep the
+			// branch root itself unconstrained after selection.
+			branchPat.steps[0].field = 0
+		}
+		if len(branchPat.predicates) > 0 || len(branchPat.steps) > 1 || alt.field != 0 {
 			alt.steps = make([]QueryStep, len(branchPat.steps))
 			copy(alt.steps, branchPat.steps)
 			alt.predicates = make([]QueryPredicate, len(branchPat.predicates))

@@ -124,6 +124,9 @@ type QueryPredicate struct {
 type alternativeSymbol struct {
 	symbol  Symbol
 	isNamed bool
+	// field constrains this branch to a child with the given parent field ID.
+	// It is only evaluated when the alternation step is matched as a child.
+	field FieldID
 	// textMatch for string alternatives like "func"
 	textMatch string
 	// captureID is the first capture on this branch. captureIDs contains all.
@@ -633,8 +636,12 @@ func (q *Query) matchPattern(pat *Pattern, node *Node, lang *Language, source []
 }
 
 func (q *Query) matchStepWithRollback(steps []QueryStep, stepIdx int, node *Node, lang *Language, source []byte, captures *[]QueryCapture) bool {
+	return q.matchStepWithRollbackAtParent(steps, stepIdx, node, nil, -1, lang, source, captures)
+}
+
+func (q *Query) matchStepWithRollbackAtParent(steps []QueryStep, stepIdx int, node *Node, parent *Node, childIdx int, lang *Language, source []byte, captures *[]QueryCapture) bool {
 	checkpoint := len(*captures)
-	if q.matchSteps(steps, stepIdx, node, lang, source, captures) {
+	if q.matchStepsWithParent(steps, stepIdx, node, parent, childIdx, lang, source, captures) {
 		return true
 	}
 	*captures = (*captures)[:checkpoint]

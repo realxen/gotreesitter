@@ -714,6 +714,31 @@ func TestParseAlternationComplexBranchPreserved(t *testing.T) {
 	}
 }
 
+func TestParseAlternationFieldShorthandPreserved(t *testing.T) {
+	lang := queryTestLanguage()
+	q, err := NewQuery(`(function_declaration [name: (_) @x body: (_) @x])`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if q.PatternCount() != 1 {
+		t.Fatalf("PatternCount: got %d, want 1", q.PatternCount())
+	}
+	steps := q.patterns[0].steps
+	if len(steps) != 2 {
+		t.Fatalf("steps: got %d, want 2", len(steps))
+	}
+	step := steps[1]
+	if len(step.alternatives) != 2 {
+		t.Fatalf("alternatives: got %d, want 2", len(step.alternatives))
+	}
+	if step.alternatives[0].field == 0 {
+		t.Fatal("first alternation branch lost field constraint")
+	}
+	if step.alternatives[1].field == 0 {
+		t.Fatal("second alternation branch lost field constraint")
+	}
+}
+
 func TestParseErrorPseudoNodeAllowed(t *testing.T) {
 	lang := queryTestLanguage()
 	if _, err := NewQuery(`(ERROR) @error`, lang); err != nil {
@@ -1098,6 +1123,66 @@ func TestMatchSimpleNodeType(t *testing.T) {
 	}
 	if m.Captures[0].Node.Text(tree.Source()) != "main" {
 		t.Errorf("Capture text: got %q, want %q", m.Captures[0].Node.Text(tree.Source()), "main")
+	}
+}
+
+func TestMatchAlternationFieldShorthandRespectsField(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`(function_declaration [name: (_) @x body: (_) @x])`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 1 {
+		t.Fatalf("matches: got %d, want 1", len(matches))
+	}
+	if len(matches[0].Captures) != 2 {
+		t.Fatalf("captures: got %d, want 2", len(matches[0].Captures))
+	}
+
+	got := map[string]bool{}
+	for _, c := range matches[0].Captures {
+		got[c.Node.Text(tree.Source())] = true
+	}
+
+	if !got["main"] {
+		t.Fatalf("missing name capture 'main'; captures=%v", matches[0].Captures)
+	}
+	if !got["42"] {
+		t.Fatalf("missing body capture '42'; captures=%v", matches[0].Captures)
+	}
+}
+
+func TestMatchRootAlternationFieldShorthandRespectsParentField(t *testing.T) {
+	lang := queryTestLanguage()
+	tree := buildSimpleTree(lang)
+
+	q, err := NewQuery(`[name: (_) body: (_)] @x`, lang)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	matches := q.Execute(tree)
+	if len(matches) != 2 {
+		t.Fatalf("matches: got %d, want 2", len(matches))
+	}
+
+	got := map[string]bool{}
+	for _, m := range matches {
+		if len(m.Captures) != 1 {
+			t.Fatalf("captures per match: got %d, want 1", len(m.Captures))
+		}
+		got[m.Captures[0].Node.Text(tree.Source())] = true
+	}
+
+	if !got["main"] {
+		t.Fatalf("missing field capture 'main'; matches=%v", matches)
+	}
+	if !got["42"] {
+		t.Fatalf("missing field capture '42'; matches=%v", matches)
 	}
 }
 
