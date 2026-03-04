@@ -32,6 +32,8 @@ type Parser struct {
 	forceRawSpanTable []bool
 	included          []Range
 	logger            ParserLogger
+	glrTrace          bool // temporary: verbose GLR stack tracing
+	maxConflictWidth  int  // widest N-way conflict in the parse table
 	timeoutMicros     uint64
 	cancellationFlag  *uint32
 	denseLimit        int
@@ -125,8 +127,22 @@ func NewParser(lang *Language) *Parser {
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
 		p.hasKeywordState = buildKeywordStates(lang)
 		p.rootSymbol, p.hasRootSymbol = p.inferRootSymbol()
+		p.maxConflictWidth = computeMaxConflictWidth(lang)
 	}
 	return p
+}
+
+// computeMaxConflictWidth scans the parse action table and returns the
+// widest N-way conflict (largest len(entry.Actions)). This determines the
+// minimum GLR stack cap needed to keep all fork paths alive.
+func computeMaxConflictWidth(lang *Language) int {
+	maxWidth := 1
+	for i := range lang.ParseActions {
+		if n := len(lang.ParseActions[i].Actions); n > maxWidth {
+			maxWidth = n
+		}
+	}
+	return maxWidth
 }
 
 func (p *Parser) inferRootSymbol() (Symbol, bool) {
@@ -452,6 +468,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if maxStacksOverride > 0 && maxStacksOverride > maxStacks {
 		maxStacks = maxStacksOverride
 	}
+	// Ensure the stack cap is at least as wide as the grammar's widest
+	// N-way conflict. Without this, retainTopStacks silently drops correct
+	// parse paths, producing wrong trees instead of triggering error recovery.
+	if p.maxConflictWidth > maxStacks {
+		maxStacks = p.maxConflictWidth
+	}
 	mergePerKeyCap := maxStacksPerMergeKey
 	if reuse != nil {
 		// Incremental reparses benefit from tighter GLR retention because
@@ -516,10 +538,24 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// Keep the most promising stacks instead of truncating by insertion
 		// order, which can discard viable parses on highly-ambiguous inputs.
 		if len(stacks) > maxStacks {
+			if p.glrTrace {
+				fmt.Printf("[GLR] CAP CULL: %d stacks → keep %d\n", len(stacks), maxStacks)
+				for ci := range stacks {
+					fmt.Printf("  pre-cull[%d]: st=%d dead=%v shift=%v dep=%d score=%d byte=%d\n",
+						ci, stacks[ci].top().state, stacks[ci].dead, stacks[ci].shifted, stacks[ci].depth(), stacks[ci].score, stacks[ci].byteOffset)
+				}
+			}
 			if perfCountersEnabled {
 				perfRecordGlobalCapCull(len(stacks), maxStacks)
 			}
 			stacks = retainTopStacks(stacks, maxStacks)
+			if p.glrTrace {
+				fmt.Printf("[GLR] after cull:\n")
+				for ci := range stacks {
+					fmt.Printf("  kept[%d]: st=%d dead=%v shift=%v dep=%d score=%d byte=%d\n",
+						ci, stacks[ci].top().state, stacks[ci].dead, stacks[ci].shifted, stacks[ci].depth(), stacks[ci].score, stacks[ci].byteOffset)
+				}
+			}
 		}
 
 		// Keep the most promising stack in slot 0 because several parser
@@ -636,6 +672,19 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		numStacks := len(stacks)
 		anyReduced := false
 
+		if p.glrTrace {
+			symName := "?"
+			if int(tok.Symbol) < len(p.language.SymbolNames) {
+				symName = p.language.SymbolNames[tok.Symbol]
+			}
+			fmt.Printf("[GLR] iter=%d tok=%s(%d)[%d-%d] stacks=%d needTok=%v\n",
+				iter, symName, tok.Symbol, tok.StartByte, tok.EndByte, len(stacks), needToken)
+			for si := range stacks {
+				fmt.Printf("  s[%d]: st=%d dead=%v shift=%v dep=%d byte=%d\n",
+					si, stacks[si].top().state, stacks[si].dead, stacks[si].shifted, stacks[si].depth(), stacks[si].byteOffset)
+			}
+		}
+
 		parseActions := p.language.ParseActions
 		for si := 0; si < numStacks; si++ {
 			s := &stacks[si]
@@ -648,6 +697,13 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			var actions []ParseAction
 			if actionIdx != 0 && int(actionIdx) < len(parseActions) {
 				actions = parseActions[actionIdx].Actions
+			}
+			if p.glrTrace && len(stacks) > 1 {
+				fmt.Printf("  stack[%d] state=%d actionIdx=%d actions=%d\n", si, currentState, actionIdx, len(actions))
+				for ai, a := range actions {
+					fmt.Printf("    action[%d]: type=%d state=%d sym=%d cnt=%d prec=%d\n",
+						ai, a.Type, a.State, a.Symbol, a.ChildCount, a.DynamicPrecedence)
+				}
 			}
 
 			// --- Extra token handling (comments, whitespace) ---
@@ -691,6 +747,9 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// When multiple alternatives exist, drop no-action stacks
 				// immediately instead of running deep recovery scans.
 				if len(stacks) > 1 {
+					if p.glrTrace {
+						fmt.Printf("  stack[%d] KILLED: no action for sym=%d in state=%d (multiple stacks)\n", si, tok.Symbol, currentState)
+					}
 					s.dead = true
 					continue
 				}
@@ -775,16 +834,35 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				// Copy the current stack value before appending forks.
 				// Appending can reallocate `stacks`, which would invalidate `s`.
 				base := *s
+				if p.glrTrace {
+					fmt.Printf("[GLR] FORK: %d actions from state=%d\n", len(actions), currentState)
+					for ai, a := range actions {
+						symName := "?"
+						if int(a.Symbol) < len(p.language.SymbolNames) {
+							symName = p.language.SymbolNames[a.Symbol]
+						}
+						fmt.Printf("  action[%d]: type=%d state=%d sym=%s(%d) cnt=%d prec=%d\n",
+							ai, a.Type, a.State, symName, a.Symbol, a.ChildCount, a.DynamicPrecedence)
+					}
+				}
 				for ai := 1; ai < len(actions); ai++ {
 					fork := base.cloneWithScratch(&scratch.gss)
 					act := actions[ai]
 					p.applyAction(&fork, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
+					if p.glrTrace {
+						fmt.Printf("[GLR] fork[%d] after action[%d]: st=%d dead=%v shift=%v dep=%d byte=%d\n",
+							len(stacks), ai, fork.top().state, fork.dead, fork.shifted, fork.depth(), fork.byteOffset)
+					}
 					stacks = append(stacks, fork)
 				}
 				// Re-acquire the pointer after possible reallocation.
 				s = &stacks[si]
 				act := actions[0]
 				p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
+				if p.glrTrace {
+					fmt.Printf("[GLR] orig[%d] after action[0]: st=%d dead=%v shift=%v dep=%d byte=%d\n",
+						si, s.top().state, s.dead, s.shifted, s.depth(), s.byteOffset)
+				}
 			} else {
 				act := actions[0]
 				if act.Type == ParseActionReduce {

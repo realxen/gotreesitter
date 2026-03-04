@@ -79,6 +79,14 @@ func (p *Parser) Language() *Language {
 	return p.language
 }
 
+// SetGLRTrace enables verbose GLR stack tracing to stdout (debug only).
+func (p *Parser) SetGLRTrace(enabled bool) {
+	if p == nil {
+		return
+	}
+	p.glrTrace = enabled
+}
+
 // SetLogger installs a parser debug logger. Pass nil to disable logging.
 func (p *Parser) SetLogger(logger ParserLogger) {
 	if p == nil {

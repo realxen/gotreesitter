@@ -1,6 +1,8 @@
 package grammars
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/odvcencio/gotreesitter"
@@ -62,6 +64,26 @@ var top50CorrectnessLanguages = []string{
 }
 
 func TestTop50ParseSmokeNoErrors(t *testing.T) {
+	testParseSmokeNoErrors(t, top50CorrectnessLanguages)
+}
+
+func TestCore100ParseSmokeNoErrors(t *testing.T) {
+	if !includeCore100StrictSmoke() {
+		t.Skip("set GTS_CORE100_STRICT_SMOKE=1 to run strict no-error smoke on Core100")
+	}
+	testParseSmokeNoErrors(t, Core100LanguageNames())
+}
+
+func includeCore100StrictSmoke() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GTS_CORE100_STRICT_SMOKE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func testParseSmokeNoErrors(t *testing.T, names []string) {
 	entries := AllLanguages()
 	entryByName := make(map[string]LangEntry, len(entries))
 	for _, entry := range entries {
@@ -69,7 +91,7 @@ func TestTop50ParseSmokeNoErrors(t *testing.T) {
 	}
 	t.Cleanup(func() { PurgeEmbeddedLanguageCache() })
 
-	for _, name := range top50CorrectnessLanguages {
+	for _, name := range names {
 		name := name
 		t.Run(name, func(t *testing.T) {
 			entry, ok := entryByName[name]
