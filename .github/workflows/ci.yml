@@ -110,11 +110,18 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: CGo Parity Gate (Lock-Backed Set + Issue Repros + GLR Canary)
+      - name: CGo Structural Parity Gate (Fresh + Incremental + Corpus + GLR)
         run: |
           cd cgo_harness
           go test . -tags treesitter_c_parity \
-            -run '^TestParityFreshParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$' \
+            -run '^TestParityFreshParse$|^TestParityIncrementalParse$|^TestParityHasNoErrors$|^TestParityCorpusFreshParse$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$|^TestParityGateCoverageRatchet$' \
+            -count=1 -v
+
+      - name: CGo Highlight + YAML Parity Gate
+        run: |
+          cd cgo_harness
+          go test . -tags treesitter_c_parity \
+            -run '^TestParityHighlight$|^TestParityHighlightAllGrammars$|^TestParityYAMLCorpus$|^TestParityYAMLCorpusStructural$|^TestParityYAMLCorpusSummary$' \
             -count=1 -v
 
   perf-regression:
