@@ -22,7 +22,8 @@ func includeParitySkippedBacklog() bool {
 }
 
 // TestParitySkippedBacklogFreshParse is an env-gated diagnostic that executes
-// fresh parse parity for languages currently listed in paritySkips.
+// fresh parse parity for languages currently listed in paritySkips and the
+// knownDegradedStructural backlog.
 //
 // Run manually:
 //
@@ -33,8 +34,17 @@ func TestParitySkippedBacklogFreshParse(t *testing.T) {
 		t.Skip("set GTS_PARITY_RUN_SKIPPED_BACKLOG=1 to run skip-backlog diagnostics")
 	}
 
-	names := make([]string, 0, len(paritySkips))
+	names := make([]string, 0, len(paritySkips)+len(knownDegradedStructural))
+	seen := map[string]struct{}{}
 	for name := range paritySkips {
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for name := range knownDegradedStructural {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
 		names = append(names, name)
 	}
 	sort.Strings(names)

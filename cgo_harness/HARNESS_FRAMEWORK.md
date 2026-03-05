@@ -28,6 +28,30 @@ Real corpus sourcing should remain lock-backed and reproducible. Use:
 - `cgo_harness/cmd/build_real_corpus`
 - `cgo_harness/cmd/build_real_corpus/top50_manifest.json`
 
+Build command:
+
+```sh
+go run ./cgo_harness/cmd/build_real_corpus \
+  -profile cgo_harness/cmd/build_real_corpus/top50_manifest.json \
+  -out cgo_harness/corpus_real
+```
+
+Real corpus quality bar:
+
+- Target `small`/`medium`/`large` bucket coverage per language.
+- Files come from lock-pinned upstream commits.
+- Manifest records source path + commit + SHA256 for reproducibility.
+- Enforced minimum: at least 2 files per language and total bytes above the
+  medium threshold.
+
+Optional quality check:
+
+```sh
+cd cgo_harness
+GTS_REAL_CORPUS_MANIFEST=corpus_real/manifest.json \
+  go test . -run TestRealCorpusManifestQuality -count=1
+```
+
 ## 3) Gate Separation
 
 Correctness and perf are intentionally separate gates.
@@ -43,6 +67,8 @@ Correctness and perf are intentionally separate gates.
     - `TestParityGLRCanarySet`
     - `TestParityGLRCapPressureTopLanguages`
     - `TestParityHighlight`
+- Optional deep probe:
+  - `TestParityScalaRealWorldCorpus`
 - Perf gate:
   - Stable bench trio only:
     - `BenchmarkGoParseFullDFA`

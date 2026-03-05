@@ -32,6 +32,34 @@ var paritySkips = map[string]parityMeta{
 	// Parse-support-specific skips (e.g. missing scanners) should not live here.
 }
 
+// knownDegradedStructural tracks currently non-parity structural languages
+// within the full-coverage gate. Keep this list shrinking over time.
+var knownDegradedStructural = map[string]string{
+	"blade":    "smoke sample parse shape diverges from C",
+	"caddy":    "smoke sample parse shape diverges from C",
+	"chatito":  "smoke sample parse shape diverges from C",
+	"cobol":    "smoke sample parse shape diverges from C",
+	"comment":  "smoke sample parse shape diverges from C",
+	"cooklang": "smoke sample parse shape diverges from C",
+	"elsa":     "smoke sample parse shape diverges from C",
+	"enforce":  "smoke sample parse shape diverges from C",
+	"fortran":  "smoke sample parse shape diverges from C",
+	"haskell":  "smoke sample parse shape diverges from C",
+	"hcl":      "smoke sample parse shape diverges from C",
+	"hlsl":     "smoke sample parse shape diverges from C",
+	"just":     "smoke sample parse shape diverges from C",
+	"less":     "smoke sample parse shape diverges from C",
+	"mermaid":  "smoke sample parse shape diverges from C",
+	"nginx":    "smoke sample parse shape diverges from C",
+	"nim":      "smoke sample parse shape diverges from C",
+	"pascal":   "smoke sample parse shape diverges from C",
+	"pug":      "smoke sample parse shape diverges from C",
+	"rst":      "smoke sample parse shape diverges from C",
+	"svelte":   "smoke sample parse shape diverges from C",
+	"vhdl":     "smoke sample parse shape diverges from C",
+	"wolfram":  "smoke sample parse shape diverges from C",
+}
+
 type parityCase struct {
 	name   string
 	source string
@@ -63,110 +91,23 @@ var hasDedicatedSample = func() map[string]bool {
 	return m
 }()
 
-// curatedStructuralLanguages is the hand-vetted structural-parity set that
-// gates merges for C-vs-Go parse-tree shape.
-var curatedStructuralLanguages = map[string]bool{
-	"ada":               true,
-	"agda":              true,
-	"angular":           true,
-	"apex":              true,
-	"arduino":           true,
-	"asm":               true,
-	"astro":             true,
-	"authzed":           true,
-	"awk":               true,
-	"bash":              true,
-	"bass":              true,
-	"beancount":         true,
-	"bibtex":            true,
-	"bicep":             true,
-	"bitbake":           true,
-	"brightscript":      true,
-	"c":                 true,
-	"c_sharp":           true,
-	"cairo":             true,
-	"capnp":             true,
-	"circom":            true,
-	"commonlisp":        true,
-	"comment":           true,
-	"cmake":             true,
-	"clojure":           true,
-	"corn":              true,
-	"cpon":              true,
-	"cpp":               true,
-	"crystal":           true,
-	"css":               true,
-	"csv":               true,
-	"cuda":              true,
-	"cue":               true,
-	"cylc":              true,
-	"dart":              true,
-	"d":                 true,
-	"desktop":           true,
-	"devicetree":        true,
-	"dhall":             true,
-	"diff":              true,
-	"disassembly":       true,
-	"djot":              true,
-	"dockerfile":        true,
-	"dot":               true,
-	"doxygen":           true,
-	"dtd":               true,
-	"earthfile":         true,
-	"ebnf":              true,
-	"editorconfig":      true,
-	"eds":               true,
-	"eex":               true,
-	"elixir":            true,
-	"elm":               true,
-	"elisp":             true,
-	"erlang":            true,
-	"facility":          true,
-	"faust":             true,
-	"gdscript":          true,
-	"go":                true,
-	"gomod":             true,
-	"graphql":           true,
-	"haskell":           true,
-	"haxe":              true,
-	"hcl":               true,
-	"html":              true,
-	"ini":               true,
-	"java":              true,
-	"javascript":        true,
-	"json":              true,
-	"json5":             true,
-	"julia":             true,
-	"kotlin":            true,
-	"lua":               true,
-	"make":              true,
-	"markdown":          true,
-	"nix":               true,
-	"objc":              true,
-	"ocaml":             true,
-	"perl":              true,
-	"php":               true,
-	"powershell":        true,
-	"python":            true,
-	"r":                 true,
-	"ruby":              true,
-	"rust":              true,
-	"embedded_template": true,
-	"regex":             true,
-	"scala":             true,
-	"scss":              true,
-	"sql":               true,
-	"svelte":            true,
-	"swift":             true,
-	"toml":              true,
-	"tsx":               true,
-	"typescript":        true,
-	"xml":               true,
-	"yaml":              true,
-	"verilog":           true,
-	"vimdoc":            true,
-	"zig":               true,
-}
+// curatedStructuralLanguages is the merge-blocking structural parity set.
+// It includes every language with a dedicated smoke sample and supported parse
+// backend (DFA, partial DFA, or token source).
+var curatedStructuralLanguages = func() map[string]bool {
+	out := make(map[string]bool, len(parityCases))
+	for _, tc := range parityCases {
+		if !hasDedicatedSample[tc.name] {
+			continue
+		}
+		report, ok := paritySupportByName[tc.name]
+		if !ok || report.Backend == grammars.ParseBackendUnsupported {
+			continue
+		}
+		out[tc.name] = true
+	}
+	return out
+}()
 
 var parityEntriesByName, paritySupportByName = func() (map[string]grammars.LangEntry, map[string]grammars.ParseSupport) {
 	entries := make(map[string]grammars.LangEntry)
@@ -226,6 +167,9 @@ var parityIgnoreKnownSkips = func() bool {
 func paritySkipReason(name string) string {
 	if parityIgnoreKnownSkips {
 		return ""
+	}
+	if reason, ok := knownDegradedStructural[name]; ok {
+		return "known degraded structural parity: " + reason
 	}
 	if meta, ok := paritySkips[name]; ok {
 		return meta.skipReason

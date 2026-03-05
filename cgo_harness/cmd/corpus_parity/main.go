@@ -188,10 +188,18 @@ func main() {
 
 func parseLangs(raw string) []string {
 	value := strings.TrimSpace(raw)
-	if value == "" || value == "top10" || value == "top" {
+	switch value {
+	case "", "top10", "top":
 		out := make([]string, len(topParityLanguages))
 		copy(out, topParityLanguages)
 		return out
+	case "top50":
+		if langs, err := loadLangsFromListFile([]string{
+			filepath.Join("..", "grammars", "update_tier1_top50.txt"),
+			filepath.Join("grammars", "update_tier1_top50.txt"),
+		}); err == nil && len(langs) > 0 {
+			return langs
+		}
 	}
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
@@ -208,6 +216,42 @@ func parseLangs(raw string) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+func loadLangsFromListFile(candidates []string) ([]string, error) {
+	var path string
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		st, err := os.Stat(candidate)
+		if err == nil && !st.IsDir() {
+			path = candidate
+			break
+		}
+	}
+	if path == "" {
+		return nil, fmt.Errorf("list file not found")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(b), "\n")
+	out := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		out = append(out, line)
+	}
+	return out, nil
 }
 
 func buildRunner(lang string, entries map[string]grammars.LangEntry, support map[string]grammars.ParseSupport) (*languageRunner, error) {

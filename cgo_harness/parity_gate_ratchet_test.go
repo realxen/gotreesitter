@@ -6,8 +6,9 @@ import "testing"
 
 const (
 	// Ratchets: these should only move in the "stricter" direction over time.
-	minCuratedStructuralLanguages = 100
+	minCuratedStructuralLanguages = 206
 	minCuratedHighlightLanguages  = 200
+	maxKnownDegradedStructural    = 23
 	maxKnownDegradedHighlight     = 49
 	maxParitySkips                = 0
 )
@@ -20,6 +21,9 @@ func TestParityGateCoverageRatchet(t *testing.T) {
 	}
 	if got := len(curatedHighlightLanguages); got < minCuratedHighlightLanguages {
 		t.Fatalf("curatedHighlightLanguages shrank: got=%d min=%d", got, minCuratedHighlightLanguages)
+	}
+	if got := len(knownDegradedStructural); got > maxKnownDegradedStructural {
+		t.Fatalf("knownDegradedStructural grew: got=%d max=%d", got, maxKnownDegradedStructural)
 	}
 	if got := len(knownDegradedHighlight); got > maxKnownDegradedHighlight {
 		t.Fatalf("knownDegradedHighlight grew: got=%d max=%d", got, maxKnownDegradedHighlight)

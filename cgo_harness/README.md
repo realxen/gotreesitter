@@ -45,6 +45,14 @@ go test . -tags treesitter_c_parity \
   -count=1 -v
 ```
 
+Optional Scala real-world structural parity probe:
+
+```sh
+go test . -tags treesitter_c_parity \
+  -run '^TestParityScalaRealWorldCorpus$' \
+  -count=1 -v
+```
+
 ## Run Corpus Parity (`dump.v1`)
 
 This command compares `gotreesitter` vs the native C oracle, emits `dump.v1`
@@ -64,6 +72,39 @@ Notes:
 - `--lang` accepts `top10` (default), a single language (`go`), or a comma-separated list.
 - For multiple languages, corpus layout is `--corpus/<language>/**`.
 - For a single language (`--lang go`), `--corpus` can point directly at that language directory.
+
+## Build Real Corpus (Lock-Pinned)
+
+Use the corpus builder to materialize production-grade real corpus fixtures from
+`grammars/languages.lock` pinned upstream commits:
+
+```sh
+go run ./cgo_harness/cmd/build_real_corpus \
+  -profile cgo_harness/cmd/build_real_corpus/top50_manifest.json \
+  -out cgo_harness/corpus_real
+```
+
+Notes:
+
+- Selection is deterministic and bucketed (`small`, `medium`, `large`) per language.
+- Selection targets `small`/`medium`/`large` buckets per language, with deterministic fallback when one bucket has no candidates.
+- Source files are pulled from pinned upstream commits and recorded in
+  `cgo_harness/corpus_real/manifest.json` with SHA256 + source path metadata.
+- Validate corpus quality bar:
+
+```sh
+cd cgo_harness
+GTS_REAL_CORPUS_MANIFEST=corpus_real/manifest.json \
+  go test . -run TestRealCorpusManifestQuality -count=1
+```
+
+- Use this corpus with the parity runner:
+
+```sh
+go run ./cmd/harnessgate -mode correctness \
+  -real-corpus-dir cgo_harness/corpus_real \
+  -real-corpus-langs top50
+```
 
 ## Run C Baseline Benchmarks
 
