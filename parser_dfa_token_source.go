@@ -119,12 +119,7 @@ func (d *dfaTokenSource) Next() Token {
 			tok = extTok
 			tokenFromExternal = true
 		} else {
-			lexState := uint16(0)
-			if int(d.state) < len(d.language.LexModes) {
-				lexState = d.language.LexModes[d.state].LexState
-			}
-			tok = d.lexer.Next(lexState)
-			tok = d.promoteKeyword(tok)
+			tok = d.nextDFAToken()
 		}
 
 		// Some grammars can emit zero-width non-EOF tokens that have no parse
@@ -202,6 +197,100 @@ func (d *dfaTokenSource) SetParserState(state StateID) {
 
 func (d *dfaTokenSource) SetGLRStates(states []StateID) {
 	d.glrStates = states
+}
+
+func (d *dfaTokenSource) nextDFAToken() Token {
+	if d == nil || d.lexer == nil || d.language == nil {
+		return Token{}
+	}
+	lexState := uint16(0)
+	if int(d.state) < len(d.language.LexModes) {
+		lexState = d.language.LexModes[d.state].LexState
+	}
+	tok := d.lexer.Next(lexState)
+	return d.promoteKeyword(tok)
+}
+
+func (d *dfaTokenSource) nextScalaGLRDFAUnionToken() (Token, bool) {
+	if d == nil || d.lexer == nil || d.language == nil || d.lookupActionIndex == nil {
+		return Token{}, false
+	}
+	if d.language.Name != "scala" || len(d.glrStates) <= 1 {
+		return Token{}, false
+	}
+
+	startPos := d.lexer.pos
+	startRow := d.lexer.row
+	startCol := d.lexer.col
+
+	bestScore := 0
+	bestFound := false
+	bestTok := Token{}
+	bestEndPos := startPos
+	bestEndRow := startRow
+	bestEndCol := startCol
+
+	seen := make(map[StateID]struct{}, len(d.glrStates))
+	for _, st := range d.glrStates {
+		if _, ok := seen[st]; ok {
+			continue
+		}
+		seen[st] = struct{}{}
+
+		lexState := uint16(0)
+		if int(st) < len(d.language.LexModes) {
+			lexState = d.language.LexModes[st].LexState
+		}
+
+		d.lexer.pos = startPos
+		d.lexer.row = startRow
+		d.lexer.col = startCol
+
+		prevState := d.state
+		d.state = st
+		candTok := d.lexer.Next(lexState)
+		candTok = d.promoteKeyword(candTok)
+		d.state = prevState
+
+		score := 0
+		for _, liveState := range d.glrStates {
+			if d.lookupActionIndex(liveState, candTok.Symbol) != 0 {
+				score++
+			}
+		}
+
+		if score <= 0 {
+			continue
+		}
+
+		candEndPos := d.lexer.pos
+		candEndRow := d.lexer.row
+		candEndCol := d.lexer.col
+		better := !bestFound ||
+			score > bestScore ||
+			(score == bestScore && candTok.EndByte > bestTok.EndByte) ||
+			(score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos)
+		if better {
+			bestFound = true
+			bestScore = score
+			bestTok = candTok
+			bestEndPos = candEndPos
+			bestEndRow = candEndRow
+			bestEndCol = candEndCol
+		}
+	}
+
+	if !bestFound {
+		d.lexer.pos = startPos
+		d.lexer.row = startRow
+		d.lexer.col = startCol
+		return Token{}, false
+	}
+
+	d.lexer.pos = bestEndPos
+	d.lexer.row = bestEndRow
+	d.lexer.col = bestEndCol
+	return bestTok, true
 }
 
 func (d *dfaTokenSource) hasAnyActionForSymbol(sym Symbol) bool {

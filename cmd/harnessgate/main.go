@@ -60,7 +60,7 @@ func main() {
 	flag.BoolVar(&runRootTests, "root-tests", true, "run root go test ./... -count=1")
 	flag.BoolVar(&runCgoParity, "cgo-parity", true, "run cgo_harness parity gate")
 	flag.BoolVar(&runPerf, "perf", true, "run benchmark trio and optional benchgate compare")
-	flag.StringVar(&parityRunRegex, "parity-run", "^TestParityFreshParse$|^TestParityIncrementalParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$|^TestParityHighlight$", "regex passed to cgo parity go test -run")
+	flag.StringVar(&parityRunRegex, "parity-run", "^TestParityFreshParse$|^TestParityIncrementalParse$|^TestParityHasNoErrors$|^TestParityIssue3Repros$|^TestParityGLRCanaryGo$|^TestParityGLRCanarySet$|^TestParityGLRCapPressureTopLanguages$|^TestParityHighlight$|^TestParityScalaRealWorldCorpus$", "regex passed to cgo parity go test -run")
 	flag.StringVar(&parityTags, "parity-tags", "treesitter_c_parity", "build tags for cgo parity tests")
 	flag.StringVar(&benchRegex, "bench-regex", "^(BenchmarkGoParseFullDFA|BenchmarkGoParseIncrementalSingleByteEditDFA|BenchmarkGoParseIncrementalNoEditDFA)$", "benchmark regex for perf run")
 	flag.IntVar(&benchCount, "bench-count", 10, "benchmark count")

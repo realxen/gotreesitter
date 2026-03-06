@@ -22,6 +22,9 @@ func TestHighlightGapDiagnosis(t *testing.T) {
 		}
 		langName, threshold := langName, threshold
 		t.Run(langName, func(t *testing.T) {
+			if parityLanguageExcluded(langName) {
+				t.Skip("excluded by GTS_PARITY_SKIP_LANGS")
+			}
 			// Find test case
 			var tc parityCase
 			found := false
@@ -159,14 +162,17 @@ func TestHighlightGapMiniQuery(t *testing.T) {
 		expectMin int // minimum expected captures
 	}
 	tests := []miniTest{
-		{"html", "(tag_name) @tag", 4},     // all 4 tag_name nodes
-		{"julia", "(identifier) @var", 2},   // at least M and x
+		{"html", "(tag_name) @tag", 4},    // all 4 tag_name nodes
+		{"julia", "(identifier) @var", 2}, // at least M and x
 		{"elixir", "(call target: (identifier) @fn)", 2},
 		{"yaml", "(block_mapping_pair key: (_) @k)", 1},
 		{"kotlin", "(call_expression (_) @fn)", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.lang+"_mini", func(t *testing.T) {
+			if parityLanguageExcluded(tt.lang) {
+				t.Skip("excluded by GTS_PARITY_SKIP_LANGS")
+			}
 			var tc parityCase
 			found := false
 			for _, c := range parityCases {
@@ -241,6 +247,9 @@ func TestHighlightGapFieldCheck(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.lang+"_"+tt.nodeType+"_"+tt.fieldName, func(t *testing.T) {
+			if parityLanguageExcluded(tt.lang) {
+				t.Skip("excluded by GTS_PARITY_SKIP_LANGS")
+			}
 			var tc parityCase
 			found := false
 			for _, c := range parityCases {

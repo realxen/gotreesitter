@@ -16,11 +16,11 @@ func parseStackDepth(sourceLen int) int {
 func parseNodeLimit(sourceLen int) int {
 	// Keep the default budget high enough for large full-parse corpora so
 	// correctness gates can run without relying on external scale overrides.
-	// The 100k floor avoids premature truncation on small/medium inputs
-	// during short-lived ambiguity spikes.
+	// The 300k floor avoids premature truncation on small/medium inputs
+	// during short-lived ambiguity spikes and malformed-input recovery.
 	// The sourceLen*40 budget keeps corpus parity green while GLR/node
 	// pressure is still being optimized.
-	limit := max(100_000, sourceLen*40)
+	limit := max(300_000, sourceLen*40)
 	scale := parseNodeLimitScaleFactor()
 	if scale <= 1 {
 		return limit

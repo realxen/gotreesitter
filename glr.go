@@ -481,6 +481,12 @@ func stackComparePtr(a, b *glrStack) int {
 		}
 		return -1
 	}
+	if aErr, bErr := stackErrorRank(a), stackErrorRank(b); aErr != bErr {
+		if aErr < bErr {
+			return 1
+		}
+		return -1
+	}
 	if a.score != b.score {
 		if a.score > b.score {
 			return 1
@@ -521,6 +527,12 @@ func stackCompareMerge(a, b *glrStack) int {
 		}
 		return -1
 	}
+	if aErr, bErr := stackErrorRank(a), stackErrorRank(b); aErr != bErr {
+		if aErr < bErr {
+			return 1
+		}
+		return -1
+	}
 	if a.score != b.score {
 		if a.score > b.score {
 			return 1
@@ -546,6 +558,20 @@ func stackCompareMerge(a, b *glrStack) int {
 			return 1
 		}
 		return -1
+	}
+	return 0
+}
+
+func stackErrorRank(s *glrStack) int {
+	if s == nil {
+		return 2
+	}
+	top := s.top()
+	if top.node == nil {
+		return 0
+	}
+	if top.node.hasError {
+		return 1
 	}
 	return 0
 }

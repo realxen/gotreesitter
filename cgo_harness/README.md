@@ -45,11 +45,152 @@ go test . -tags treesitter_c_parity \
   -count=1 -v
 ```
 
+## Run Parity Tests In Docker Sandbox
+
+This keeps heavy parity runs isolated from your host/WSL memory space and
+captures container failure metadata (`OOMKilled`, exit code, state error).
+
+```sh
+chmod +x cgo_harness/docker/run_parity_in_docker.sh
+cgo_harness/docker/run_parity_in_docker.sh \
+  --memory 8g \
+  --cpus 4
+
+# Optional: exclude one or more languages from parity loops in this run.
+GTS_PARITY_SKIP_LANGS=scala \
+  cgo_harness/docker/run_parity_in_docker.sh \
+  --memory 8g \
+  --cpus 4
+```
+
+Run strict Scala real-world parity in the same sandbox:
+
+```sh
+cgo_harness/docker/run_parity_in_docker.sh \
+  --memory 8g \
+  --cpus 4 \
+  --strict-scala
+```
+
+Run against a specific worktree/repo root:
+
+```sh
+cgo_harness/docker/run_parity_in_docker.sh \
+  --repo-root /path/to/worktree \
+  --label glr-exp-a \
+  --memory 8g \
+  --cpus 4
+```
+
+Artifacts are written to `<out-root>/<timestamp>[-label]/` (default out-root is
+`<repo-root>/harness_out/docker`):
+
+- `container.log`
+- `inspect.json`
+- `metadata.txt`
+
+## Run Multiple Worktree Experiments In Parallel
+
+Use the experiment runner to fan out 2-3 bounded containers across different
+worktrees while preserving per-experiment artifacts/metadata.
+
+```sh
+chmod +x cgo_harness/docker/run_parity_experiments.sh
+cgo_harness/docker/run_parity_experiments.sh \
+  --experiment main=/home/me/work/gotreesitter \
+  --experiment glr-a=/home/me/work/gts-glr-a \
+  --experiment glr-b=/home/me/work/gts-glr-b \
+  --max-parallel 2 \
+  --memory 6g \
+  --cpus 2
+```
+
+You can also provide a custom command (applied to each experiment):
+
+```sh
+cgo_harness/docker/run_parity_experiments.sh \
+  --experiment scala=/home/me/work/gts-scala \
+  --max-parallel 1 \
+  -- "cd /workspace/cgo_harness && GTS_PARITY_SCALA_REALWORLD_STRICT=1 go test . -tags treesitter_c_parity -run '^TestParityScalaRealWorldCorpus$' -count=1 -v"
+```
+
 Optional Scala real-world structural parity probe:
 
 ```sh
 go test . -tags treesitter_c_parity \
   -run '^TestParityScalaRealWorldCorpus$' \
+  -count=1 -v
+```
+
+Scala real-world probe modes:
+
+- default: regression ratchet against pinned divergence baselines with stable budgets (`GOT_PARSE_NODE_LIMIT_SCALE=3`, `GOT_GLR_MAX_STACKS=8` unless already set)
+- strict: exact parity required (zero divergences + no Go error nodes)
+
+Strict mode command:
+
+```sh
+GTS_PARITY_SCALA_REALWORLD_STRICT=1 \
+  go test . -tags treesitter_c_parity \
+  -run '^TestParityScalaRealWorldCorpus$' \
+  -count=1 -v
+```
+
+## Run Parity Breaker Sweeps (Opt-In)
+
+Use breaker sweeps to aggressively search for structural/highlight parity
+regressions via deterministic source mutations and optional real-corpus runs.
+These tests are disabled by default.
+They are discovery-oriented and may intentionally fail until divergences are
+burned down.
+
+```sh
+cd cgo_harness
+GTS_PARITY_BREAKER=1 \
+GTS_PARITY_BREAKER_MAX_LANGS=50 \
+GTS_PARITY_BREAKER_MAX_MUTATIONS=12 \
+go test . -tags treesitter_c_parity \
+  -run '^TestParityMutationSweepStructural$|^TestParityMutationSweepHighlight$' \
+  -count=1 -v
+```
+
+Common controls:
+
+- `GTS_PARITY_BREAKER_LANGS=go,scala,...` explicit language allow-list.
+- `GTS_PARITY_BREAKER_PIN_LANGS=scala,...` force-priority languages into capped runs.
+- `GTS_PARITY_BREAKER_MAX_LANGS=<n>` cap selected language count after filters.
+- `GTS_PARITY_BREAKER_SHARDS=<n>` and `GTS_PARITY_BREAKER_SHARD_INDEX=<0..n-1>` deterministic sharding for parallel matrix runs.
+- `GTS_PARITY_BREAKER_INCLUDE_DEGRADED=1` include known degraded languages in sweep selection.
+- `GTS_PARITY_SKIP_LANGS=scala,...` exclude languages from parity loops (fresh/incremental/highlight/breaker).
+
+Example: 3-way sharded matrix with Scala pinned across shards:
+
+```sh
+cd cgo_harness
+for i in 0 1 2; do
+  GTS_PARITY_BREAKER=1 \
+  GTS_PARITY_BREAKER_SHARDS=3 \
+  GTS_PARITY_BREAKER_SHARD_INDEX="$i" \
+  GTS_PARITY_BREAKER_PIN_LANGS=scala \
+  GTS_PARITY_BREAKER_MAX_LANGS=40 \
+  GTS_PARITY_BREAKER_MAX_MUTATIONS=12 \
+  go test . -tags treesitter_c_parity \
+    -run '^TestParityMutationSweepStructural$' \
+    -count=1 -v &
+done
+wait
+```
+
+Optional real-corpus structural sweep from a generated manifest:
+
+```sh
+cd cgo_harness
+GTS_PARITY_BREAKER=1 \
+GTS_PARITY_BREAKER_CORPUS_MANIFEST=../harness_out/corpus_degraded7/manifest.json \
+GTS_PARITY_BREAKER_CORPUS_MAX_FILES=2 \
+GTS_PARITY_BREAKER_CORPUS_MAX_BYTES=65536 \
+go test . -tags treesitter_c_parity \
+  -run '^TestParityBreakerRealCorpusStructural$' \
   -count=1 -v
 ```
 

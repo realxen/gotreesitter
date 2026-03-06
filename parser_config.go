@@ -14,6 +14,17 @@ var (
 	parseMaxGLRStacks       int
 )
 
+// ResetParseEnvConfigCacheForTests clears memoized parser env config.
+//
+// Tests in this repo mutate env vars between cases; this helper ensures
+// subsequent parses observe the new values in the same process.
+func ResetParseEnvConfigCacheForTests() {
+	parseNodeLimitScaleOnce = sync.Once{}
+	parseNodeLimitScale = 0
+	parseMaxGLRStacksOnce = sync.Once{}
+	parseMaxGLRStacks = 0
+}
+
 func parseNodeLimitScaleFactor() int {
 	parseNodeLimitScaleOnce.Do(func() {
 		parseNodeLimitScale = 1

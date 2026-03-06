@@ -417,9 +417,37 @@ func checkoutRepoAtCommit(repoURL, commit, dstDir string) error {
 	}
 	run := func(args ...string) error {
 		cmd := exec.Command("git", args...)
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		return cmd.Run()
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%w: %s", err, msg)
+	}
+	runRetry := func(attempts int, args ...string) error {
+		if attempts < 1 {
+			attempts = 1
+		}
+		var lastErr error
+		for i := 0; i < attempts; i++ {
+			if err := run(args...); err == nil {
+				return nil
+			} else {
+				lastErr = err
+				if !retryableGitCheckoutError(err) || i == attempts-1 {
+					break
+				}
+			}
+			delay := time.Duration(i+1) * time.Second
+			if delay > 5*time.Second {
+				delay = 5 * time.Second
+			}
+			time.Sleep(delay)
+		}
+		return lastErr
 	}
 	if err := run("-C", dstDir, "init"); err != nil {
 		return fmt.Errorf("git init: %w", err)
@@ -427,7 +455,7 @@ func checkoutRepoAtCommit(repoURL, commit, dstDir string) error {
 	if err := run("-C", dstDir, "remote", "add", "origin", repoURL); err != nil {
 		return fmt.Errorf("git remote add: %w", err)
 	}
-	if err := run("-C", dstDir, "fetch", "--depth=1", "origin", commit); err != nil {
+	if err := runRetry(5, "-C", dstDir, "fetch", "--depth=1", "origin", commit); err != nil {
 		return fmt.Errorf("git fetch %s: %w", shortCommit(commit), err)
 	}
 	if err := run("-C", dstDir, "checkout", "--detach", "FETCH_HEAD"); err != nil {
@@ -458,6 +486,9 @@ func collectCandidates(repoDir string, exts []string, maxBytes int) ([]corpusFil
 		if err != nil {
 			return
 		}
+		if !looksCorpusCandidatePath(rel) {
+			return
+		}
 		if _, ok := seen[rel]; ok {
 			return
 		}
@@ -480,12 +511,24 @@ func collectCandidates(repoDir string, exts []string, maxBytes int) ([]corpusFil
 		})
 	}
 
-	priorityDirs := []string{
-		"test/corpus", "tests/corpus", "corpus", "test/fixtures", "tests/fixtures",
-		"fixtures", "examples", "example", "samples", "spec",
+	type priorityDir struct {
+		path            string
+		requireKnownExt bool
+	}
+	priorityDirs := []priorityDir{
+		{path: "test/corpus", requireKnownExt: false},
+		{path: "tests/corpus", requireKnownExt: false},
+		{path: "corpus", requireKnownExt: false},
+		{path: "test/fixtures", requireKnownExt: false},
+		{path: "tests/fixtures", requireKnownExt: false},
+		{path: "fixtures", requireKnownExt: false},
+		{path: "examples", requireKnownExt: true},
+		{path: "example", requireKnownExt: true},
+		{path: "samples", requireKnownExt: true},
+		{path: "spec", requireKnownExt: false},
 	}
 	for _, dir := range priorityDirs {
-		root := filepath.Join(repoDir, filepath.FromSlash(dir))
+		root := filepath.Join(repoDir, filepath.FromSlash(dir.path))
 		if st, err := os.Stat(root); err != nil || !st.IsDir() {
 			continue
 		}
@@ -496,7 +539,7 @@ func collectCandidates(repoDir string, exts []string, maxBytes int) ([]corpusFil
 			if d.IsDir() {
 				return nil
 			}
-			addFile(path, d, true)
+			addFile(path, d, dir.requireKnownExt)
 			return nil
 		})
 	}
@@ -507,7 +550,7 @@ func collectCandidates(repoDir string, exts []string, maxBytes int) ([]corpusFil
 		if d.IsDir() {
 			base := strings.ToLower(d.Name())
 			switch base {
-			case ".git", "node_modules", "vendor", "target", "build", "dist", "src", "queries":
+			case ".git", "node_modules", "vendor", "target", "build", "dist", "queries":
 				return filepath.SkipDir
 			default:
 				return nil
@@ -516,6 +559,14 @@ func collectCandidates(repoDir string, exts []string, maxBytes int) ([]corpusFil
 		if len(extSet) > 0 {
 			ext := strings.ToLower(filepath.Ext(path))
 			if _, ok := extSet[ext]; !ok {
+				return nil
+			}
+		} else {
+			rel, err := filepath.Rel(repoDir, path)
+			if err != nil {
+				return nil
+			}
+			if !looksGenericSourcePath(rel) {
 				return nil
 			}
 		}
@@ -530,6 +581,51 @@ func collectCandidates(repoDir string, exts []string, maxBytes int) ([]corpusFil
 		return out[i].RelPath < out[j].RelPath
 	})
 	return out, nil
+}
+
+func looksCorpusCandidatePath(relPath string) bool {
+	rel := strings.ToLower(filepath.ToSlash(relPath))
+	base := strings.ToLower(filepath.Base(rel))
+	if strings.HasPrefix(base, ".") {
+		return false
+	}
+	switch base {
+	case "readme", "readme.md", "readme.txt",
+		"license", "license.md", "copying",
+		"go.mod", "go.sum",
+		"cargo.lock", "cargo.toml",
+		"package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+		"pipfile.lock", "poetry.lock", "composer.lock",
+		"gemfile.lock", "mix.lock":
+		return false
+	}
+	if strings.HasPrefix(rel, ".github/") ||
+		strings.Contains(rel, "/.github/") ||
+		strings.HasPrefix(rel, "bindings/") ||
+		strings.Contains(rel, "/bindings/") ||
+		strings.Contains(rel, "/node_modules/") ||
+		strings.Contains(rel, "/vendor/") ||
+		strings.Contains(rel, "/dist/") ||
+		strings.Contains(rel, "/build/") {
+		return false
+	}
+	return true
+}
+
+func looksGenericSourcePath(relPath string) bool {
+	if !looksCorpusCandidatePath(relPath) {
+		return false
+	}
+	rel := strings.ToLower(filepath.ToSlash(relPath))
+	if strings.Contains(rel, "/test/") ||
+		strings.Contains(rel, "/tests/") ||
+		strings.Contains(rel, "/corpus/") ||
+		strings.Contains(rel, "/fixture") ||
+		strings.Contains(rel, "/example") ||
+		strings.Contains(rel, "/sample") {
+		return true
+	}
+	return false
 }
 
 func selectFilesByBucket(candidates []corpusFile, maxPerBucket, minSmall, minMedium, minLarge int) []selectedCorpusFile {
@@ -705,6 +801,19 @@ func abs64(n int64) int64 {
 		return -n
 	}
 	return n
+}
+
+func retryableGitCheckoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "could not resolve host") ||
+		strings.Contains(msg, "temporary failure in name resolution") ||
+		strings.Contains(msg, "name or service not known") ||
+		strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "operation timed out") ||
+		strings.Contains(msg, "connection reset by peer")
 }
 
 func classifyBucket(size int64, minSmall, minMedium, minLarge int) string {
