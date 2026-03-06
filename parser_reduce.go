@@ -115,13 +115,17 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		if leaf.isExtra && perfCountersEnabled {
 			perfRecordExtraNode()
 		}
+		targetState := act.State
+		if leaf.isExtra {
+			targetState = s.top().state
+		}
 		leaf.preGotoState = s.top().state
-		leaf.parseState = act.State
-		p.pushStackNode(s, act.State, leaf, entryScratch, gssScratch)
+		leaf.parseState = targetState
+		p.pushStackNode(s, targetState, leaf, entryScratch, gssScratch)
 		s.shifted = true
 		*nodeCount++
 		if p != nil && p.glrTrace {
-			fmt.Printf("      -> SHIFT new_state=%d depth=%d\n", act.State, s.depth())
+			fmt.Printf("      -> SHIFT new_state=%d depth=%d\n", targetState, s.depth())
 		}
 
 	case ParseActionReduce:
