@@ -34,6 +34,41 @@ func TestExtendParentSpanCoversInvisibleLeafChild(t *testing.T) {
 	}
 }
 
+func TestExtendParentSpanChainsInvisiblePrefixLeaves(t *testing.T) {
+	parent := NewParentNode(5, true, nil, nil, 0)
+	parent.startByte = 25
+	parent.endByte = 30
+	parent.startPoint = Point{Row: 1, Column: 25}
+	parent.endPoint = Point{Row: 1, Column: 30}
+
+	prefix1 := NewLeafNode(1, false, 10, 15, Point{Row: 1, Column: 10}, Point{Row: 1, Column: 15})
+	prefix2 := NewLeafNode(2, false, 15, 20, Point{Row: 1, Column: 15}, Point{Row: 1, Column: 20})
+	prefix3 := NewLeafNode(3, false, 20, 25, Point{Row: 1, Column: 20}, Point{Row: 1, Column: 25})
+	core := NewLeafNode(4, true, 25, 30, Point{Row: 1, Column: 25}, Point{Row: 1, Column: 30})
+
+	entries := []stackEntry{
+		{state: 0, node: prefix1},
+		{state: 0, node: prefix2},
+		{state: 0, node: prefix3},
+		{state: 0, node: core},
+	}
+	meta := []SymbolMetadata{
+		{},
+		{Visible: false},
+		{Visible: false},
+		{Visible: false},
+		{Visible: true},
+	}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, nil)
+
+	if got, want := parent.startByte, uint32(10); got != want {
+		t.Fatalf("parent.startByte = %d, want %d", got, want)
+	}
+	if got, want := parent.endByte, uint32(30); got != want {
+		t.Fatalf("parent.endByte = %d, want %d", got, want)
+	}
+}
+
 func TestExtendParentSpanSkipsDiscontiguousPhantom(t *testing.T) {
 	// A zero-width invisible entry AFTER the parent span (like javascript
 	// _automatic_semicolon at [27-27] after statement_block [13-26])

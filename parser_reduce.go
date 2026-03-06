@@ -414,15 +414,16 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 			parent.startPoint = n.startPoint
 		}
 	}
-	// Invisible non-extra leaf children: extend parent span for entries that
-	// buildReduceChildren drops (invisible symbol, no children to inline).
-	// Only extend for children that are contiguous with the current parent
-	// span (child.startByte <= parent.endByte for end extension, or
-	// child.endByte >= parent.startByte for start extension). Entries
-	// that start beyond the parent (e.g. zero-width _automatic_semicolon
-	// markers in javascript ASI) are not real content children and must
-	// not inflate the parent span.
-	for i := start; i < reducedEnd; i++ {
+	// Invisible non-extra children: extend parent span for entries that
+	// buildReduceChildren drops or inlines away.
+	//
+	// Scan from the end toward the beginning so backward extension can chain
+	// across adjacent hidden leaves. A forward-only pass misses prefixes like
+	// markdown plain-text runs because the earlier hidden tokens become
+	// contiguous only after a later sibling has already pulled startByte back.
+	// The same reverse scan is still safe for endByte growth because the
+	// contiguity checks below prevent phantom gaps from inflating the span.
+	for i := reducedEnd - 1; i >= start; i-- {
 		n := entries[i].node
 		if n == nil || n.isExtra {
 			continue
