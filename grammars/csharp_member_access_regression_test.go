@@ -115,7 +115,6 @@ func assertCSharpInvocationStatementShape(t *testing.T, tree *gotreesitter.Tree,
 		t.Fatalf("expression text = %q, want %q", got, "newLines")
 	}
 }
-
 func TestCSharpMemberAccessRegression(t *testing.T) {
 	lang := CSharpLanguage()
 	parser := gotreesitter.NewParser(lang)
@@ -137,7 +136,6 @@ string GetOutput()
 	}
 	assertCSharpReadToEndMemberAccessShape(t, tree, lang, src)
 }
-
 func TestCSharpMemberAccessRegressionWithTopLevelVar(t *testing.T) {
 	lang := CSharpLanguage()
 	parser := gotreesitter.NewParser(lang)

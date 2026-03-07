@@ -1840,7 +1840,6 @@ func compareStackCullKeys(lang *Language, a, b stackCullKey) int {
 	}
 	return 0
 }
-
 func retainTopStacks(stacks []glrStack, keep int) []glrStack {
 	return retainTopStacksForLanguage(stacks, keep, nil)
 }
