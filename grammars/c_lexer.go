@@ -383,13 +383,16 @@ func (ts *CTokenSource) scanDirective(offset int) (int, string, gotreesitter.Sym
 }
 
 func (ts *CTokenSource) shouldUseGenericDirective(specificSym gotreesitter.Symbol) bool {
-	if ts.preprocDirectiveSym == 0 || !ts.hasAction(ts.preprocDirectiveSym) {
+	if ts.preprocDirectiveSym == 0 {
 		return false
 	}
 	if specificSym == 0 {
 		return true
 	}
-	return !ts.hasAction(specificSym)
+	if ts.hasAction(specificSym) {
+		return false
+	}
+	return ts.hasAction(ts.preprocDirectiveSym)
 }
 
 func (ts *CTokenSource) emitGenericDirectiveLine(directiveEnd int) gotreesitter.Token {
