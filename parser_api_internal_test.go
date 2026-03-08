@@ -2,6 +2,28 @@ package gotreesitter
 
 import "testing"
 
+func TestRepetitionShiftConflictChoice(t *testing.T) {
+	chosen, ok := repetitionShiftConflictChoice([]ParseAction{
+		{Type: ParseActionReduce, Symbol: 191, ChildCount: 2},
+		{Type: ParseActionShift, State: 1245, Repetition: true},
+	})
+	if !ok {
+		t.Fatal("repetitionShiftConflictChoice = false, want true")
+	}
+	if chosen.Type != ParseActionShift || chosen.State != 1245 || !chosen.Repetition {
+		t.Fatalf("repetitionShiftConflictChoice picked %+v, want repetition shift", chosen)
+	}
+}
+
+func TestRepetitionShiftConflictChoiceRejectsNonRepetitionShift(t *testing.T) {
+	if _, ok := repetitionShiftConflictChoice([]ParseAction{
+		{Type: ParseActionReduce, Symbol: 191, ChildCount: 2},
+		{Type: ParseActionShift, State: 1245, Repetition: false},
+	}); ok {
+		t.Fatal("repetitionShiftConflictChoice = true, want false")
+	}
+}
+
 func TestShouldRetryNodeLimitParse(t *testing.T) {
 	tree := &Tree{
 		parseRuntime: ParseRuntime{

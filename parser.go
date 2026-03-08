@@ -899,6 +899,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			// For single-action entries (the common case), no fork occurs.
 			// For multi-action entries, clone the stack for each alternative.
 			if len(actions) > 1 {
+				if reuse == nil && p.language != nil && p.language.Name == "go" && maxStacksSeen > 1 && currentState == 3 && tok.Symbol == 15 {
+					if chosen, ok := repetitionShiftConflictChoice(actions); ok {
+						p.applyAction(s, chosen, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
+						continue
+					}
+				}
 				// Current external-scanner integration shares one scanner payload
 				// across all GLR stacks. Forking stacks while mutating shared
 				// scanner state can diverge from C runtime behavior. Until
@@ -1086,6 +1092,33 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 	// Iteration limit reached.
 	return finalize(stacks, ParseStopIterationLimit)
+}
+
+func repetitionShiftConflictChoice(actions []ParseAction) (ParseAction, bool) {
+	if len(actions) < 2 {
+		return ParseAction{}, false
+	}
+	var shift ParseAction
+	shiftFound := false
+	reduceFound := false
+	for _, act := range actions {
+		switch act.Type {
+		case ParseActionShift:
+			if !act.Repetition || shiftFound {
+				return ParseAction{}, false
+			}
+			shift = act
+			shiftFound = true
+		case ParseActionReduce:
+			reduceFound = true
+		default:
+			return ParseAction{}, false
+		}
+	}
+	if !shiftFound || !reduceFound {
+		return ParseAction{}, false
+	}
+	return shift, true
 }
 
 func glrStackCullTrigger(maxStacks int, class arenaClass, langName string) int {
