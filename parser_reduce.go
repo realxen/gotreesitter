@@ -243,7 +243,7 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 		reducedEnd--
 	}
 
-	children, fieldIDs := p.buildReduceChildren(windowEntries, 0, reducedEnd, childCount, act.ProductionID, arena)
+	children, fieldIDs := p.buildReduceChildren(windowEntries, 0, reducedEnd, childCount, act.Symbol, act.ProductionID, arena)
 
 	targetDepth := s.depth() - actualEnd
 	if targetDepth < 0 || !s.truncate(targetDepth) {
@@ -497,13 +497,13 @@ func isNonSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
 	}
 }
 
-func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, productionID uint16, arena *nodeArena) ([]*Node, []FieldID) {
+func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint16, arena *nodeArena) ([]*Node, []FieldID) {
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
 
 	aliasSeq := p.reduceAliasSequence(productionID)
 	if len(aliasSeq) == 0 && !p.reduceProductionHasFields(productionID) {
-		return buildReduceChildrenNoAliasNoFields(entries, start, end, symbolMeta, arena), nil
+		return buildReduceChildrenNoAliasNoFields(entries, start, end, parentSymbol, symbolMeta, arena), nil
 	}
 
 	normalizedCount := 0
@@ -529,7 +529,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		if visible {
 			normalizedCount++
 		} else {
-			normalizedCount += len(n.children)
+			normalizedCount += countFlattenedHiddenChildren(n, symbolMeta)
 		}
 	}
 
@@ -583,48 +583,21 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 		if len(kids) == 0 {
 			continue
 		}
-		copy(children[out:], kids)
+		spanStart := out
+		out = appendFlattenedHiddenChildrenWithFields(children, fieldIDs, out, n, symbolMeta)
 		if fieldIDs != nil {
-			fieldEnd := out + len(kids)
+			fieldEnd := out
 			if fieldEnd > len(fieldIDs) {
 				fieldEnd = len(fieldIDs)
 			}
-			// Propagate the hidden node's own field IDs to the
-			// inlined children. This implements "inherited" field
-			// semantics: fields assigned inside hidden/non-visible
-			// nodes become visible on the parent.
-			if len(n.fieldIDs) > 0 {
-				for j := out; j < fieldEnd; j++ {
-					kidIdx := j - out
-					if kidIdx < len(n.fieldIDs) && n.fieldIDs[kidIdx] != 0 {
-						fieldIDs[j] = n.fieldIDs[kidIdx]
-					}
-				}
-			}
 			// Apply the parent's inherited field assignment to the
-			// first named inlined child that has no field yet, but
-			// only if inlining did not already surface that same
-			// field on one of the copied children.
+			// flattened child span, but only if inlining did not
+			// already surface that same field on one of the copied
+			// children.
 			if fid != 0 {
-				alreadyAssigned := false
-				for j := out; j < fieldEnd; j++ {
-					if fieldIDs[j] == fid {
-						alreadyAssigned = true
-						break
-					}
-				}
-				for j := out; !alreadyAssigned && j < fieldEnd; j++ {
-					if fieldIDs[j] == 0 && children[j] != nil && children[j].isNamed {
-						if inherited && nodeHasDirectFieldID(children[j], fid) {
-							continue
-						}
-						fieldIDs[j] = fid
-						break
-					}
-				}
+				applyFieldToFlattenedSpan(children, fieldIDs, spanStart, fieldEnd, fid, inherited, true)
 			}
 		}
-		out += len(kids)
 	}
 	if out != len(children) {
 		children = children[:out]
@@ -635,7 +608,11 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	return children, fieldIDs
 }
 
-func buildReduceChildrenNoAliasNoFields(entries []stackEntry, start, end int, symbolMeta []SymbolMetadata, arena *nodeArena) []*Node {
+func buildReduceChildrenNoAliasNoFields(entries []stackEntry, start, end int, parentSymbol Symbol, symbolMeta []SymbolMetadata, arena *nodeArena) []*Node {
+	parentVisible := true
+	if idx := int(parentSymbol); idx < len(symbolMeta) {
+		parentVisible = symbolMeta[parentSymbol].Visible
+	}
 	normalizedCount := 0
 	for i := start; i < end; i++ {
 		n := entries[i].node
@@ -650,7 +627,13 @@ func buildReduceChildrenNoAliasNoFields(entries []stackEntry, start, end int, sy
 			normalizedCount++
 			continue
 		}
-		normalizedCount += len(n.children)
+		if parentVisible {
+			normalizedCount += countFlattenedHiddenChildren(n, symbolMeta)
+			continue
+		}
+		if len(n.children) > 0 {
+			normalizedCount++
+		}
 	}
 	if normalizedCount == 0 {
 		return nil
@@ -672,17 +655,90 @@ func buildReduceChildrenNoAliasNoFields(entries []stackEntry, start, end int, sy
 			out++
 			continue
 		}
-		kids := n.children
-		if len(kids) == 0 {
+		if parentVisible {
+			out = appendFlattenedHiddenChildren(children, out, n, symbolMeta)
 			continue
 		}
-		copy(children[out:], kids)
-		out += len(kids)
+		if len(n.children) == 0 {
+			continue
+		}
+		children[out] = n
+		out++
 	}
 	if out != len(children) {
 		return children[:out]
 	}
 	return children
+}
+
+func countFlattenedHiddenChildren(n *Node, symbolMeta []SymbolMetadata) int {
+	if n == nil {
+		return 0
+	}
+	visible := true
+	if idx := int(n.symbol); idx < len(symbolMeta) {
+		visible = symbolMeta[n.symbol].Visible
+	}
+	if visible {
+		return 1
+	}
+	count := 0
+	for _, child := range n.children {
+		count += countFlattenedHiddenChildren(child, symbolMeta)
+	}
+	return count
+}
+
+func appendFlattenedHiddenChildren(dst []*Node, out int, n *Node, symbolMeta []SymbolMetadata) int {
+	return appendFlattenedHiddenChildrenWithFields(dst, nil, out, n, symbolMeta)
+}
+
+func appendFlattenedHiddenChildrenWithFields(dst []*Node, fieldDst []FieldID, out int, n *Node, symbolMeta []SymbolMetadata) int {
+	if n == nil {
+		return out
+	}
+	visible := true
+	if idx := int(n.symbol); idx < len(symbolMeta) {
+		visible = symbolMeta[n.symbol].Visible
+	}
+	if visible {
+		dst[out] = n
+		return out + 1
+	}
+	for i, child := range n.children {
+		spanStart := out
+		out = appendFlattenedHiddenChildrenWithFields(dst, fieldDst, out, child, symbolMeta)
+		if fieldDst != nil && i < len(n.fieldIDs) && n.fieldIDs[i] != 0 {
+			applyFieldToFlattenedSpan(dst, fieldDst, spanStart, out, n.fieldIDs[i], false, false)
+		}
+	}
+	return out
+}
+
+func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, start, end int, fid FieldID, inherited bool, preferNamed bool) {
+	if fid == 0 || fieldIDs == nil || start >= end {
+		return
+	}
+	alreadyAssigned := false
+	for j := start; j < end; j++ {
+		if fieldIDs[j] == fid {
+			alreadyAssigned = true
+			break
+		}
+	}
+	for j := start; !alreadyAssigned && j < end; j++ {
+		if fieldIDs[j] != 0 || children[j] == nil {
+			continue
+		}
+		if preferNamed && !children[j].isNamed {
+			continue
+		}
+		if inherited && nodeHasDirectFieldID(children[j], fid) {
+			continue
+		}
+		fieldIDs[j] = fid
+		break
+	}
 }
 
 func nodeHasDirectFieldID(n *Node, fid FieldID) bool {
@@ -706,7 +762,7 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 		return
 	}
 
-	children, fieldIDs := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.ProductionID, arena)
+	children, fieldIDs := p.buildReduceChildren(entries, window.start, window.reducedEnd, childCount, act.Symbol, act.ProductionID, arena)
 
 	trailingStart := window.reducedEnd
 	trailingEnd := window.actualEnd
@@ -884,6 +940,12 @@ func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol)
 		return n
 	}
 
+	if lang != nil {
+		if idx := int(n.symbol); idx < len(lang.SymbolMetadata) && !lang.SymbolMetadata[n.symbol].Visible {
+			n = materializeHiddenNodeForAlias(arena, lang, n)
+		}
+	}
+
 	if arena == nil {
 		cloned := &Node{}
 		*cloned = *n
@@ -917,6 +979,64 @@ func cloneNodeInArena(arena *nodeArena, n *Node) *Node {
 	*cloned = *n
 	cloned.ownerArena = arena
 	return cloned
+}
+
+func materializeHiddenNodeForAlias(arena *nodeArena, lang *Language, n *Node) *Node {
+	if n == nil || lang == nil {
+		return n
+	}
+	symbolMeta := lang.SymbolMetadata
+	normalizedCount := countFlattenedHiddenChildren(n, symbolMeta)
+	if normalizedCount == 0 {
+		cloned := cloneNodeInArena(arena, n)
+		cloned.children = nil
+		cloned.fieldIDs = nil
+		return cloned
+	}
+
+	cloned := cloneNodeInArena(arena, n)
+	children := arena.allocNodeSlice(normalizedCount)
+	var fieldIDs []FieldID
+	if hiddenTreeHasFieldIDs(n) {
+		fieldIDs = arena.allocFieldIDSlice(normalizedCount)
+	}
+	out := appendFlattenedHiddenChildrenWithFields(children, fieldIDs, 0, n, symbolMeta)
+	cloned.children = children[:out]
+	if len(fieldIDs) > 0 {
+		fieldIDs = fieldIDs[:out]
+		hasField := false
+		for _, fid := range fieldIDs {
+			if fid != 0 {
+				hasField = true
+				break
+			}
+		}
+		if hasField {
+			cloned.fieldIDs = fieldIDs
+		} else {
+			cloned.fieldIDs = nil
+		}
+	} else {
+		cloned.fieldIDs = nil
+	}
+	return cloned
+}
+
+func hiddenTreeHasFieldIDs(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	for _, fid := range n.fieldIDs {
+		if fid != 0 {
+			return true
+		}
+	}
+	for _, child := range n.children {
+		if hiddenTreeHasFieldIDs(child) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildFieldIDs creates the field ID slice for a reduce action.

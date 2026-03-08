@@ -927,7 +927,7 @@ func TestBuildReduceChildrenHiddenChildDoesNotDuplicateExistingField(t *testing.
 	rhs := newLeafNodeInArena(arena, 3, true, 3, 4, Point{Row: 0, Column: 3}, Point{Row: 0, Column: 4})
 	hidden := newParentNodeInArena(arena, 1, false, []*Node{operator, rhs}, []FieldID{1, 0}, 0)
 
-	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, arena)
+	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 0, 0, arena)
 	if got, want := len(children), 2; got != want {
 		t.Fatalf("len(children) = %d, want %d", got, want)
 	}
@@ -960,7 +960,7 @@ func TestBuildReduceChildrenNoAliasNoFieldsInlinesHiddenChildren(t *testing.T) {
 	hidden := newParentNodeInArena(arena, 1, false, []*Node{left, op}, nil, 0)
 	right := newLeafNodeInArena(arena, 2, true, 4, 5, Point{Row: 0, Column: 4}, Point{Row: 0, Column: 5})
 
-	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}, {node: right}}, 0, 2, 2, 0, arena)
+	children, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hidden}, {node: right}}, 0, 2, 2, 2, 0, arena)
 	if got, want := len(children), 3; got != want {
 		t.Fatalf("len(children) = %d, want %d", got, want)
 	}
@@ -969,6 +969,48 @@ func TestBuildReduceChildrenNoAliasNoFieldsInlinesHiddenChildren(t *testing.T) {
 	}
 	if children[0] != left || children[1] != op || children[2] != right {
 		t.Fatalf("children order = %#v, want hidden children then right leaf", children)
+	}
+}
+
+func TestBuildReduceChildrenHiddenParentDefersFlattenUntilVisibleBoundary(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"EOF", "_hidden_a", "_hidden_b", "identifier", "operator", "visible_parent"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "_hidden_a", Visible: false, Named: false},
+			{Name: "_hidden_b", Visible: false, Named: false},
+			{Name: "identifier", Visible: true, Named: true},
+			{Name: "operator", Visible: true, Named: false},
+			{Name: "visible_parent", Visible: true, Named: true},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	left := newLeafNodeInArena(arena, 3, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	op := newLeafNodeInArena(arena, 4, false, 2, 3, Point{Row: 0, Column: 2}, Point{Row: 0, Column: 3})
+	right := newLeafNodeInArena(arena, 3, true, 4, 5, Point{Row: 0, Column: 4}, Point{Row: 0, Column: 5})
+	tail := newLeafNodeInArena(arena, 3, true, 6, 7, Point{Row: 0, Column: 6}, Point{Row: 0, Column: 7})
+
+	hiddenInner := newParentNodeInArena(arena, 2, false, []*Node{left, op}, nil, 0)
+	hiddenOuterChildren, _ := parser.buildReduceChildren([]stackEntry{{node: hiddenInner}, {node: right}}, 0, 2, 2, 1, 0, arena)
+	if got, want := len(hiddenOuterChildren), 2; got != want {
+		t.Fatalf("len(hiddenOuterChildren) = %d, want %d", got, want)
+	}
+	if hiddenOuterChildren[0] != hiddenInner || hiddenOuterChildren[1] != right {
+		t.Fatalf("hidden outer children = %#v, want compact hidden child then right", hiddenOuterChildren)
+	}
+
+	hiddenOuter := newParentNodeInArena(arena, 1, false, hiddenOuterChildren, nil, 0)
+	visibleChildren, fieldIDs := parser.buildReduceChildren([]stackEntry{{node: hiddenOuter}, {node: tail}}, 0, 2, 2, 5, 0, arena)
+	if fieldIDs != nil {
+		t.Fatalf("fieldIDs = %#v, want nil", fieldIDs)
+	}
+	if got, want := len(visibleChildren), 4; got != want {
+		t.Fatalf("len(visibleChildren) = %d, want %d", got, want)
+	}
+	if visibleChildren[0] != left || visibleChildren[1] != op || visibleChildren[2] != right || visibleChildren[3] != tail {
+		t.Fatalf("visible children order = %#v, want fully flattened hidden chain plus tail", visibleChildren)
 	}
 }
 
