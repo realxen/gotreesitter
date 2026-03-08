@@ -39,6 +39,8 @@ type Parser struct {
 	denseLimit        int
 	smallBase         int
 	smallLookup       [][]smallActionPair
+	reduceAliasSeq    [][]Symbol
+	reduceHasFields   []bool
 }
 
 type smallActionPair struct {
@@ -124,12 +126,41 @@ func NewParser(lang *Language) *Parser {
 		if len(lang.SmallParseTableMap) > 0 && len(lang.SmallParseTable) > 0 {
 			p.smallLookup = buildSmallLookup(lang)
 		}
+		p.reduceAliasSeq = buildReduceAliasSequences(lang)
+		p.reduceHasFields = buildReduceFieldPresence(lang)
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
 		p.hasKeywordState = buildKeywordStates(lang)
 		p.rootSymbol, p.hasRootSymbol = p.inferRootSymbol()
 		p.maxConflictWidth = computeMaxConflictWidth(lang)
 	}
 	return p
+}
+
+func buildReduceAliasSequences(lang *Language) [][]Symbol {
+	if lang == nil || len(lang.AliasSequences) == 0 {
+		return nil
+	}
+	out := make([][]Symbol, len(lang.AliasSequences))
+	for i, seq := range lang.AliasSequences {
+		for j := range seq {
+			if seq[j] != 0 {
+				out[i] = seq
+				break
+			}
+		}
+	}
+	return out
+}
+
+func buildReduceFieldPresence(lang *Language) []bool {
+	if lang == nil || len(lang.FieldMapSlices) == 0 {
+		return nil
+	}
+	out := make([]bool, len(lang.FieldMapSlices))
+	for i, fm := range lang.FieldMapSlices {
+		out[i] = fm[1] != 0
+	}
+	return out
 }
 
 // computeMaxConflictWidth scans the parse action table and returns the

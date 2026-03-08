@@ -501,10 +501,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
 
-	var aliasSeq []Symbol
-	if pid := int(productionID); pid >= 0 && pid < len(lang.AliasSequences) {
-		aliasSeq = lang.AliasSequences[pid]
-	}
+	aliasSeq := p.reduceAliasSequence(productionID)
 
 	normalizedCount := 0
 	structuralChildIndex := 0
@@ -800,15 +797,22 @@ func (p *Parser) aliasSymbolForChild(productionID uint16, childIndex int) Symbol
 	if p == nil || p.language == nil || childIndex < 0 {
 		return 0
 	}
-	pid := int(productionID)
-	if pid < 0 || pid >= len(p.language.AliasSequences) {
-		return 0
-	}
-	seq := p.language.AliasSequences[pid]
+	seq := p.reduceAliasSequence(productionID)
 	if childIndex >= len(seq) {
 		return 0
 	}
 	return seq[childIndex]
+}
+
+func (p *Parser) reduceAliasSequence(productionID uint16) []Symbol {
+	if p == nil {
+		return nil
+	}
+	pid := int(productionID)
+	if pid < 0 || pid >= len(p.reduceAliasSeq) {
+		return nil
+	}
+	return p.reduceAliasSeq[pid]
 }
 
 func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol) *Node {
@@ -859,6 +863,9 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 
 	pid := int(productionID)
 	if pid >= len(p.language.FieldMapSlices) {
+		return nil, nil
+	}
+	if pid >= len(p.reduceHasFields) || !p.reduceHasFields[pid] {
 		return nil, nil
 	}
 
