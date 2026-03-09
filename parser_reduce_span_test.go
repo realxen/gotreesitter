@@ -199,6 +199,58 @@ func TestExtendParentSpanAllowsOutdentGap(t *testing.T) {
 	}
 }
 
+func TestExtendParentSpanAllowsMultilineStringEndGap(t *testing.T) {
+	parent := NewParentNode(3, true, nil, nil, 0)
+	parent.startByte = 2409
+	parent.endByte = 2747
+	parent.startPoint = Point{Row: 68, Column: 28}
+	parent.endPoint = Point{Row: 74, Column: 51}
+
+	core := NewLeafNode(2, true, 2409, 2747, Point{Row: 68, Column: 28}, Point{Row: 74, Column: 51})
+	stringEnd := NewLeafNode(4, false, 2759, 2759, Point{Row: 75, Column: 11}, Point{Row: 75, Column: 11})
+
+	entries := []stackEntry{
+		{state: 0, node: core},
+		{state: 0, node: stringEnd},
+	}
+	meta := []SymbolMetadata{
+		{}, {}, {Visible: true}, {}, {Visible: false},
+	}
+	names := []string{"", "", "visible", "", "_multiline_string_end"}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, names)
+
+	if got, want := parent.endByte, uint32(2759); got != want {
+		t.Fatalf("parent.endByte = %d, want %d", got, want)
+	}
+}
+
+func TestExtendParentSpanChainsInterpolatedMultilineStringTail(t *testing.T) {
+	parent := NewParentNode(3, true, nil, nil, 0)
+	parent.startByte = 2409
+	parent.endByte = 2747
+	parent.startPoint = Point{Row: 68, Column: 28}
+	parent.endPoint = Point{Row: 74, Column: 51}
+
+	core := NewLeafNode(2, true, 2409, 2747, Point{Row: 68, Column: 28}, Point{Row: 74, Column: 51})
+	middle := NewLeafNode(4, false, 2747, 2756, Point{Row: 75, Column: 0}, Point{Row: 75, Column: 9})
+	stringEnd := NewLeafNode(5, false, 2756, 2759, Point{Row: 75, Column: 9}, Point{Row: 75, Column: 12})
+
+	entries := []stackEntry{
+		{state: 0, node: core},
+		{state: 0, node: middle},
+		{state: 0, node: stringEnd},
+	}
+	meta := []SymbolMetadata{
+		{}, {}, {Visible: true}, {}, {Visible: false}, {Visible: false},
+	}
+	names := []string{"", "", "visible", "", "_interpolated_multiline_string_middle", "_multiline_string_end"}
+	extendParentSpanToWindow(parent, entries, 0, len(entries), meta, names)
+
+	if got, want := parent.endByte, uint32(2759); got != want {
+		t.Fatalf("parent.endByte = %d, want %d", got, want)
+	}
+}
+
 func TestExtendParentSpanSkipsInvisibleLineEnding(t *testing.T) {
 	parent := NewParentNode(3, true, nil, nil, 0)
 	parent.startByte = 10

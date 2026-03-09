@@ -272,6 +272,9 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 // currently drops it during child normalization.
 func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeHaskellImportsSpan(root, source, lang)
+	normalizeScalaTrailingCommentOwnership(root, source, lang)
+	normalizeScalaFunctionModifierFields(root, lang)
+	normalizeScalaInterpolatedStringTail(root, source, lang)
 }
 
 func bytesAreTrivia(b []byte) bool {
@@ -312,6 +315,282 @@ func normalizeHaskellImportsSpan(root *Node, source []byte, lang *Language) {
 		left.endByte = right.startByte
 		left.endPoint = advancePointByBytes(left.endPoint, gap)
 	}
+}
+
+func normalizeScalaTrailingCommentOwnership(root *Node, source []byte, lang *Language) {
+	if root == nil || len(source) == 0 || lang == nil || lang.Name != "scala" {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		normalizeScalaTrailingCommentSiblings(n, source, lang)
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeScalaTrailingCommentSiblings(parent *Node, source []byte, lang *Language) {
+	if parent == nil || len(parent.children) < 3 {
+		return
+	}
+	for i := 1; i+1 < len(parent.children); {
+		firstComment := parent.children[i]
+		if !isScalaCommentNode(firstComment, lang) {
+			i++
+			continue
+		}
+		prev := parent.children[i-1]
+		body := scalaIndentedCommentTarget(prev, lang)
+		if body == nil || body.endByte != firstComment.startByte {
+			i++
+			continue
+		}
+		j := i
+		for j < len(parent.children) && isScalaCommentNode(parent.children[j], lang) {
+			j++
+		}
+		if j >= len(parent.children) {
+			i++
+			continue
+		}
+		next := parent.children[j]
+		if next == nil || next.isExtra {
+			i++
+			continue
+		}
+		lastComment := parent.children[j-1]
+
+		targetEndByte := lastComment.endByte
+		targetEndPoint := lastComment.endPoint
+		if lastComment.endByte <= uint32(len(source)) && next.startByte >= lastComment.endByte && next.startByte <= uint32(len(source)) {
+			gap := source[lastComment.endByte:next.startByte]
+			if bytesAreTrivia(gap) {
+				targetEndByte = next.startByte
+				targetEndPoint = advancePointByBytes(lastComment.endPoint, gap)
+			}
+		}
+
+		added := parent.children[i:j]
+		rebuiltChildren := make([]*Node, 0, len(body.children)+len(added))
+		rebuiltChildren = append(rebuiltChildren, body.children...)
+		rebuiltChildren = append(rebuiltChildren, added...)
+		body.children = rebuiltChildren
+
+		if len(body.fieldIDs) > 0 {
+			rebuiltFieldIDs := make([]FieldID, 0, len(body.fieldIDs)+len(added))
+			rebuiltFieldIDs = append(rebuiltFieldIDs, body.fieldIDs...)
+			for range added {
+				rebuiltFieldIDs = append(rebuiltFieldIDs, 0)
+			}
+			body.fieldIDs = rebuiltFieldIDs
+		}
+		if len(body.fieldSources) > 0 {
+			rebuiltFieldSources := make([]uint8, 0, len(body.fieldSources)+len(added))
+			rebuiltFieldSources = append(rebuiltFieldSources, body.fieldSources...)
+			for range added {
+				rebuiltFieldSources = append(rebuiltFieldSources, 0)
+			}
+			body.fieldSources = rebuiltFieldSources
+		}
+		if targetEndByte > body.endByte {
+			body.endByte = targetEndByte
+			body.endPoint = targetEndPoint
+		}
+		if targetEndByte > prev.endByte {
+			prev.endByte = targetEndByte
+			prev.endPoint = targetEndPoint
+		}
+
+		parent.children = append(parent.children[:i], parent.children[j:]...)
+		if len(parent.fieldIDs) > 0 {
+			parent.fieldIDs = append(parent.fieldIDs[:i], parent.fieldIDs[j:]...)
+			if len(parent.fieldSources) > 0 {
+				parent.fieldSources = append(parent.fieldSources[:i], parent.fieldSources[j:]...)
+			}
+		}
+	}
+}
+
+func isScalaCommentNode(n *Node, lang *Language) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Type(lang) {
+	case "comment", "block_comment":
+		return true
+	default:
+		return false
+	}
+}
+
+func scalaIndentedCommentTarget(prev *Node, lang *Language) *Node {
+	if prev == nil || lang == nil || prev.Type(lang) != "function_definition" || len(prev.children) == 0 {
+		return nil
+	}
+	last := prev.children[len(prev.children)-1]
+	if last == nil || last.Type(lang) != "indented_block" {
+		return nil
+	}
+	return last
+}
+
+func normalizeScalaFunctionModifierFields(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "scala" {
+		return
+	}
+	returnTypeID, ok := lang.FieldByName("return_type")
+	if !ok {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "function_definition" {
+			for i, child := range n.children {
+				if child == nil || child.Type(lang) != "modifiers" {
+					continue
+				}
+				if i < len(n.fieldIDs) && n.fieldIDs[i] == returnTypeID {
+					n.fieldIDs[i] = 0
+					if i < len(n.fieldSources) {
+						n.fieldSources[i] = fieldSourceNone
+					}
+				}
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeScalaInterpolatedStringTail(root *Node, source []byte, lang *Language) {
+	if root == nil || len(source) == 0 || lang == nil || lang.Name != "scala" {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "interpolated_string_expression" && len(n.children) >= 2 {
+			inner := n.children[1]
+			if inner != nil && inner.Type(lang) == "interpolated_string" {
+				normalizeScalaSingleLineInterpolatedStringTail(n, inner, source)
+			}
+		}
+		if n.Type(lang) == "field_expression" && len(n.children) >= 2 {
+			left := n.children[0]
+			right := n.children[1]
+			if left != nil && right != nil &&
+				left.Type(lang) == "interpolated_string_expression" &&
+				right.Type(lang) == "." &&
+				left.endByte < right.startByte &&
+				right.startByte <= uint32(len(source)) &&
+				scalaInterpolatedStringTail(source[left.endByte:right.startByte]) {
+				extendNodeEndTo(left, right.startByte, source)
+				if len(left.children) >= 2 {
+					inner := left.children[1]
+					if inner != nil && inner.Type(lang) == "interpolated_string" {
+						extendNodeEndTo(inner, right.startByte, source)
+					}
+				}
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+		if n.Type(lang) == "infix_expression" && len(n.children) > 0 {
+			last := n.children[len(n.children)-1]
+			if last != nil && last.Type(lang) == "interpolated_string_expression" && n.endByte < last.endByte {
+				extendNodeEndTo(n, last.endByte, source)
+			}
+		}
+	}
+	walk(root)
+}
+
+func normalizeScalaSingleLineInterpolatedStringTail(expr *Node, inner *Node, source []byte) {
+	if expr == nil || inner == nil || inner.startByte >= uint32(len(source)) {
+		return
+	}
+	if source[inner.startByte] != '"' {
+		return
+	}
+	if inner.startByte+2 < uint32(len(source)) &&
+		source[inner.startByte+1] == '"' &&
+		source[inner.startByte+2] == '"' {
+		return
+	}
+	end, ok := scanScalaSingleLineStringTail(source, inner.endByte)
+	if !ok || end <= inner.endByte {
+		return
+	}
+	extendNodeEndTo(inner, end, source)
+	extendNodeEndTo(expr, end, source)
+}
+
+func scalaInterpolatedStringTail(gap []byte) bool {
+	if len(gap) == 0 {
+		return false
+	}
+	hasQuote := false
+	for _, c := range gap {
+		switch c {
+		case ' ', '\t', '\n', '\r', '\f', '|', '}', '"':
+			if c == '"' {
+				hasQuote = true
+			}
+		default:
+			return false
+		}
+	}
+	return hasQuote
+}
+
+func scanScalaSingleLineStringTail(source []byte, start uint32) (uint32, bool) {
+	if start >= uint32(len(source)) {
+		return 0, false
+	}
+	for i := start; i < uint32(len(source)); i++ {
+		switch source[i] {
+		case '\n', '\r':
+			return 0, false
+		case '"':
+			if !isEscapedQuote(source, i) {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func isEscapedQuote(source []byte, idx uint32) bool {
+	if idx == 0 || idx > uint32(len(source)) {
+		return false
+	}
+	backslashes := 0
+	for i := int(idx) - 1; i >= 0 && source[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
+}
+
+func extendNodeEndTo(n *Node, end uint32, source []byte) {
+	if n == nil || end <= n.endByte || end > uint32(len(source)) {
+		return
+	}
+	gap := source[n.endByte:end]
+	n.endByte = end
+	n.endPoint = advancePointByBytes(n.endPoint, gap)
 }
 
 func advancePointByBytes(start Point, b []byte) Point {

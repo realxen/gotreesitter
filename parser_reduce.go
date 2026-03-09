@@ -460,12 +460,39 @@ func extendParentSpanToWindow(parent *Node, entries []stackEntry, start, reduced
 		if isNonSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
 			continue
 		}
-		// Invisible entries (with or without children) may have span that
-		// extends beyond their inlined children due to nested invisible leaf
-		// extensions. Apply contiguity check below.
-		if n.endByte >= parent.startByte && n.startByte < parent.startByte {
+	// Invisible entries (with or without children) may have span that
+	// extends beyond their inlined children due to nested invisible leaf
+	// extensions. Apply contiguity check below.
+	if n.endByte >= parent.startByte && n.startByte < parent.startByte {
 			parent.startByte = n.startByte
 			parent.startPoint = n.startPoint
+		}
+		if n.startByte <= parent.endByte && n.endByte > parent.endByte {
+			parent.endByte = n.endByte
+			parent.endPoint = n.endPoint
+		}
+		if n.startByte == n.endByte && n.startByte > parent.endByte &&
+			isSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
+			parent.endByte = n.endByte
+			parent.endPoint = n.endPoint
+		}
+	}
+	// Follow with a forward pass for endByte growth so contiguous hidden tails
+	// can chain (for example interpolated multiline string middle -> string end).
+	for i := start; i < reducedEnd; i++ {
+		n := entries[i].node
+		if n == nil || n.isExtra {
+			continue
+		}
+		visible := true
+		if idx := int(n.symbol); idx < len(symbolMeta) {
+			visible = symbolMeta[n.symbol].Visible
+		}
+		if visible {
+			continue
+		}
+		if isNonSpanExtendingInvisibleSymbol(n.symbol, symbolNames) {
+			continue
 		}
 		if n.startByte <= parent.endByte && n.endByte > parent.endByte {
 			parent.endByte = n.endByte
@@ -488,6 +515,14 @@ func isSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
 	case "_implicit_end_tag":
 		return true
 	case "_outdent":
+		return true
+	case "_single_line_string_end":
+		return true
+	case "_multiline_string_end":
+		return true
+	case "_interpolated_string_middle":
+		return true
+	case "_interpolated_multiline_string_middle":
 		return true
 	default:
 		return false
@@ -650,6 +685,7 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 					source = fieldSourceInherited
 				}
 				applyFieldToFlattenedSpan(children, fieldIDs, fieldSources, spanStart, fieldEnd, fid, source, true)
+				normalizeMixedSourceFieldSpan(fieldIDs, fieldSources, spanStart, fieldEnd)
 			}
 		}
 	}
@@ -760,6 +796,12 @@ func appendFlattenedHiddenChildrenWithFields(dst []*Node, fieldDst []FieldID, fi
 		dst[out] = n
 		return out + 1
 	}
+	nodeStart := out
+	type hiddenFieldSpan struct {
+		count  int
+		source uint8
+	}
+	var repeated map[FieldID]hiddenFieldSpan
 	for i, child := range n.children {
 		spanStart := out
 		out = appendFlattenedHiddenChildrenWithFields(dst, fieldDst, fieldSrcDst, out, child, symbolMeta)
@@ -769,9 +811,81 @@ func appendFlattenedHiddenChildrenWithFields(dst []*Node, fieldDst []FieldID, fi
 				source = fieldSourceDirect
 			}
 			applyFieldToFlattenedSpan(dst, fieldDst, fieldSrcDst, spanStart, out, n.fieldIDs[i], source, false)
+			if source == fieldSourceDirect && spanStart < out {
+				if repeated == nil {
+					repeated = make(map[FieldID]hiddenFieldSpan)
+				}
+				span := repeated[n.fieldIDs[i]]
+				span.count++
+				span.source = source
+				repeated[n.fieldIDs[i]] = span
+			}
 		}
 	}
+	for fid, span := range repeated {
+		if span.count < 2 {
+			continue
+		}
+		applyFieldToFlattenedSpan(dst, fieldDst, fieldSrcDst, nodeStart, out, fid, span.source, false)
+	}
+	normalizeMixedSourceFieldSpan(fieldDst, fieldSrcDst, nodeStart, out)
 	return out
+}
+
+func normalizeMixedSourceFieldSpan(fieldIDs []FieldID, fieldSources []uint8, start, end int) {
+	if fieldIDs == nil || fieldSources == nil || start >= end {
+		return
+	}
+	type mixedSourceSpan struct {
+		firstDirect  int
+		lastDirect   int
+		hasDirect    bool
+		hasInherited bool
+	}
+	var spans map[FieldID]mixedSourceSpan
+	for i := start; i < end; i++ {
+		fid := fieldIDs[i]
+		if fid == 0 {
+			continue
+		}
+		source := fieldSourceAt(fieldSources, i)
+		if source != fieldSourceDirect && source != fieldSourceInherited {
+			continue
+		}
+		if spans == nil {
+			spans = make(map[FieldID]mixedSourceSpan)
+		}
+		span := spans[fid]
+		if !span.hasDirect {
+			span.firstDirect = -1
+			span.lastDirect = -1
+		}
+		switch source {
+		case fieldSourceDirect:
+			if !span.hasDirect {
+				span.firstDirect = i
+			}
+			span.lastDirect = i
+			span.hasDirect = true
+		case fieldSourceInherited:
+			span.hasInherited = true
+		}
+		spans[fid] = span
+	}
+	for fid, span := range spans {
+		if !span.hasDirect || !span.hasInherited {
+			continue
+		}
+		for i := start; i < end; i++ {
+			if fieldIDs[i] != fid || fieldSourceAt(fieldSources, i) != fieldSourceInherited {
+				continue
+			}
+			if i < span.firstDirect || i > span.lastDirect {
+				fieldIDs[i] = 0
+				fieldSources[i] = fieldSourceNone
+			}
+		}
+	}
 }
 
 func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSources []uint8, start, end int, fid FieldID, source uint8, preferNamed bool) {
@@ -833,6 +947,17 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 			for j := first + 1; j < last; j++ {
 				if children[j] == nil || fieldIDs[j] != 0 {
 					continue
+				}
+				fieldIDs[j] = fid
+				if fieldSources != nil {
+					fieldSources[j] = source
+				}
+			}
+		}
+		if first >= 0 {
+			for j := first - 1; j >= start; j-- {
+				if children[j] == nil || children[j].isNamed || fieldIDs[j] != 0 {
+					break
 				}
 				fieldIDs[j] = fid
 				if fieldSources != nil {

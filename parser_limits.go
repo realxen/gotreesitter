@@ -3,7 +3,7 @@ package gotreesitter
 import "sync/atomic"
 
 func parseIterations(sourceLen int) int {
-	return max(10_000, sourceLen*20)
+	return max(10_000, sourceLen*30)
 }
 
 // parseStackDepth returns the stack depth limit scaled to input size.
