@@ -271,6 +271,7 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 // C tree-sitter attributes trailing trivia to a grouped node but this runtime
 // currently drops it during child normalization.
 func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
+	normalizeCooklangTrailingStepTail(root, source, lang)
 	normalizeHaskellImportsSpan(root, source, lang)
 	normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	normalizeScalaTrailingCommentOwnership(root, source, lang)
@@ -297,6 +298,53 @@ func bytesContainLineBreak(b []byte) bool {
 		}
 	}
 	return false
+}
+
+func bytesAreCooklangStepTail(b []byte) bool {
+	sawPunctuation := false
+	for _, c := range b {
+		switch c {
+		case '.', '!', '?':
+			if sawPunctuation {
+				return false
+			}
+			sawPunctuation = true
+		case ' ', '\t', '\n', '\r':
+		default:
+			return false
+		}
+	}
+	return sawPunctuation
+}
+
+func normalizeCooklangTrailingStepTail(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "cooklang" || len(source) == 0 {
+		return
+	}
+	if root.Type(lang) != "recipe" || len(root.children) != 1 {
+		return
+	}
+	step := root.children[0]
+	if step == nil || step.Type(lang) != "step" || step.endByte >= uint32(len(source)) {
+		return
+	}
+	tail := source[step.endByte:]
+	if !bytesAreCooklangStepTail(tail) {
+		return
+	}
+	stepEnd := step.endByte
+	for i := int(step.endByte); i < len(source); i++ {
+		switch source[i] {
+		case '.', '!', '?':
+			stepEnd = uint32(i + 1)
+		}
+	}
+	if stepEnd > step.endByte {
+		extendNodeEndTo(step, stepEnd, source)
+	}
+	if root.endByte < uint32(len(source)) {
+		extendNodeEndTo(root, uint32(len(source)), source)
+	}
 }
 
 func normalizeTopLevelTrailingLineBreakSpan(root *Node, source []byte, lang *Language) {

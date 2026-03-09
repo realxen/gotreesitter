@@ -38,7 +38,6 @@ var paritySkips = map[string]parityMeta{
 // within the full-coverage gate. Keep this list shrinking over time.
 var knownDegradedStructural = map[string]string{
 	"cobol":    "smoke sample parse shape diverges from C",
-	"cooklang": "smoke sample parse shape diverges from C",
 	"elsa":     "smoke sample parse shape diverges from C",
 	"fortran":  "smoke sample parse shape diverges from C",
 	"less":     "smoke sample parse shape diverges from C",

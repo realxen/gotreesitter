@@ -101,3 +101,25 @@ func TestCaddyTopLevelServerCarriesTrailingNewlineSpan(t *testing.T) {
 		t.Fatalf("caddy server.EndByte=%d, want root.EndByte=%d", got, want)
 	}
 }
+
+func TestCooklangStepCarriesTerminalPunctuationAndRootNewline(t *testing.T) {
+	const src = "Add @salt{1%tsp}.\n"
+	tree, lang := parseByLanguageName(t, "cooklang", src)
+	root := tree.RootNode()
+	if root.HasError() {
+		t.Fatalf("unexpected cooklang parse error: %s", root.SExpr(lang))
+	}
+	if root.ChildCount() != 1 {
+		t.Fatalf("cooklang root childCount=%d, want 1", root.ChildCount())
+	}
+	step := root.Child(0)
+	if step == nil || step.Type(lang) != "step" {
+		t.Fatalf("cooklang child=%v, want step", step)
+	}
+	if got, want := step.EndByte(), uint32(len(src)-1); got != want {
+		t.Fatalf("cooklang step.EndByte=%d, want %d", got, want)
+	}
+	if got, want := root.EndByte(), uint32(len(src)); got != want {
+		t.Fatalf("cooklang root.EndByte=%d, want %d", got, want)
+	}
+}
