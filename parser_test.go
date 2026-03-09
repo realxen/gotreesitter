@@ -1089,6 +1089,44 @@ func TestBuildResultFromGLRWithGSSOnlyStack(t *testing.T) {
 	tree.Release()
 }
 
+func TestCompactAcceptedStacksPreservesAllAcceptedForFinalChoice(t *testing.T) {
+	lang := buildAmbiguousLanguage()
+	parser := NewParser(lang)
+	source := []byte("x")
+	arena := acquireNodeArena(arenaClassFull)
+
+	low := newLeafNodeInArena(arena, 2, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	low.parseState = 2
+	high := newLeafNodeInArena(arena, 3, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
+	high.parseState = 2
+
+	stacks := []glrStack{
+		{accepted: false, score: 99, entries: []stackEntry{{state: 1}}},
+		{accepted: true, score: 0, entries: []stackEntry{{state: 2, node: low}}},
+		{accepted: true, score: 5, entries: []stackEntry{{state: 2, node: high}}},
+	}
+
+	accepted := compactAcceptedStacks(stacks)
+	if got, want := len(accepted), 2; got != want {
+		t.Fatalf("len(accepted) = %d, want %d", got, want)
+	}
+	if !accepted[0].accepted || !accepted[1].accepted {
+		t.Fatal("expected only accepted stacks after compaction")
+	}
+	if accepted[0].score != 0 || accepted[1].score != 5 {
+		t.Fatalf("accepted scores = [%d %d], want [0 5]", accepted[0].score, accepted[1].score)
+	}
+
+	tree := parser.buildResultFromGLR(accepted, source, arena, nil, nil, nil)
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("buildResultFromGLR returned nil tree/root")
+	}
+	if got, want := tree.RootNode().Symbol(), Symbol(3); got != want {
+		t.Fatalf("root symbol = %d, want %d", got, want)
+	}
+	tree.Release()
+}
+
 func TestParserLongChain(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)

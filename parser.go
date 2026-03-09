@@ -1086,11 +1086,11 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			consecutiveReduces = 0
 		}
 
-		// Check for accept on any stack.
-		for si := range stacks {
-			if stacks[si].accepted {
-				return finalize(stacks[si:si+1], ParseStopAccepted)
-			}
+		// Check for accept on any stack. Keep all accepted branches so the
+		// final GLR chooser can rank them instead of short-circuiting on the
+		// first accepted stack encountered.
+		if accepted := compactAcceptedStacks(stacks); len(accepted) > 0 {
+			return finalize(accepted, ParseStopAccepted)
 		}
 	}
 
@@ -1123,6 +1123,17 @@ func repetitionShiftConflictChoice(actions []ParseAction) (ParseAction, bool) {
 		return ParseAction{}, false
 	}
 	return shift, true
+}
+
+func compactAcceptedStacks(stacks []glrStack) []glrStack {
+	acceptedCount := 0
+	for i := range stacks {
+		if stacks[i].accepted {
+			stacks[acceptedCount] = stacks[i]
+			acceptedCount++
+		}
+	}
+	return stacks[:acceptedCount]
 }
 
 func glrStackCullTrigger(maxStacks int, class arenaClass, langName string) int {
