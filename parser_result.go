@@ -272,6 +272,7 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 // currently drops it during child normalization.
 func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeHaskellImportsSpan(root, source, lang)
+	normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	normalizeScalaTrailingCommentOwnership(root, source, lang)
 	normalizeScalaFunctionModifierFields(root, lang)
 	normalizeScalaInterpolatedStringTail(root, source, lang)
@@ -287,6 +288,38 @@ func bytesAreTrivia(b []byte) bool {
 		}
 	}
 	return true
+}
+
+func bytesContainLineBreak(b []byte) bool {
+	for _, c := range b {
+		if c == '\n' || c == '\r' {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeTopLevelTrailingLineBreakSpan(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || len(source) == 0 {
+		return
+	}
+	switch lang.Name {
+	case "caddy", "pug":
+	default:
+		return
+	}
+	if len(root.children) != 1 {
+		return
+	}
+	child := root.children[0]
+	if child == nil || child.endByte >= root.endByte || root.endByte > uint32(len(source)) {
+		return
+	}
+	gap := source[child.endByte:root.endByte]
+	if !bytesAreTrivia(gap) || !bytesContainLineBreak(gap) {
+		return
+	}
+	extendNodeEndTo(child, root.endByte, source)
 }
 
 func normalizeHaskellImportsSpan(root *Node, source []byte, lang *Language) {
