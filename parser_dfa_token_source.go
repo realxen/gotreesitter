@@ -225,7 +225,12 @@ func (d *dfaTokenSource) nextDFAToken() Token {
 		lexState = d.language.LexModes[d.state].LexState
 	}
 	tok := d.lexer.Next(lexState)
-	return d.promoteKeyword(tok)
+	tok = d.promoteKeyword(tok)
+	tok, endPos, endRow, endCol := d.normalizeDFAToken(tok, d.lexer.pos, d.lexer.row, d.lexer.col)
+	d.lexer.pos = endPos
+	d.lexer.row = endRow
+	d.lexer.col = endCol
+	return tok
 }
 
 func (d *dfaTokenSource) shouldForceEOFLookahead() bool {
@@ -316,6 +321,10 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 		d.state = st
 		candTok := d.lexer.Next(lexState)
 		candTok = d.promoteKeyword(candTok)
+		candTok, candEndPos, candEndRow, candEndCol := d.normalizeDFAToken(candTok, d.lexer.pos, d.lexer.row, d.lexer.col)
+		d.lexer.pos = candEndPos
+		d.lexer.row = candEndRow
+		d.lexer.col = candEndCol
 		d.state = prevState
 
 		score := 0
@@ -329,15 +338,13 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 			continue
 		}
 
-		candEndPos := d.lexer.pos
-		candEndRow := d.lexer.row
-		candEndCol := d.lexer.col
 		candVisible := int(candTok.Symbol) < len(d.language.SymbolMetadata) && d.language.SymbolMetadata[candTok.Symbol].Visible
 		better := !bestFound ||
-			score > bestScore ||
-			(score == bestScore && candTok.EndByte > bestTok.EndByte) ||
-			(score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos) ||
-			(score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos == bestEndPos && candVisible && !bestVisible)
+			candTok.StartByte < bestTok.StartByte ||
+			(candTok.StartByte == bestTok.StartByte && score > bestScore) ||
+			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte > bestTok.EndByte) ||
+			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos) ||
+			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos == bestEndPos && candVisible && !bestVisible)
 		if better {
 			bestFound = true
 			bestScore = score
@@ -360,6 +367,34 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 	d.lexer.row = bestEndRow
 	d.lexer.col = bestEndCol
 	return bestTok, true
+}
+
+func (d *dfaTokenSource) normalizeDFAToken(tok Token, endPos int, endRow, endCol uint32) (Token, int, uint32, uint32) {
+	if d == nil || d.language == nil || d.lexer == nil {
+		return tok, endPos, endRow, endCol
+	}
+	if d.language.Name != "bash" || tok.Symbol != 86 || tok.EndByte <= tok.StartByte+1 {
+		return tok, endPos, endRow, endCol
+	}
+	start := int(tok.StartByte)
+	if start < 0 || start >= len(d.lexer.source) || d.lexer.source[start] != '\n' {
+		return tok, endPos, endRow, endCol
+	}
+	limit := int(tok.EndByte)
+	if limit > len(d.lexer.source) {
+		limit = len(d.lexer.source)
+	}
+	for i := start + 1; i < limit; i++ {
+		if d.lexer.source[i] != '\n' {
+			return tok, endPos, endRow, endCol
+		}
+	}
+	tok.EndByte = tok.StartByte + 1
+	tok.EndPoint = Point{Row: tok.StartPoint.Row + 1, Column: 0}
+	if len(tok.Text) > 1 {
+		tok.Text = tok.Text[:1]
+	}
+	return tok, start + 1, tok.StartPoint.Row + 1, 0
 }
 
 func (d *dfaTokenSource) hasAnyActionForSymbol(sym Symbol) bool {

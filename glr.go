@@ -485,13 +485,20 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 }
 
 func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
-	if lang != nil && lang.Name == "c_sharp" {
+	if lang != nil && (lang.Name == "c_sharp" || lang.Name == "bash") {
 		depthLimit := stackEquivalentFrontierDepthLimit
-		if depthLimit < 10 {
+		if lang.Name == "bash" {
+			if depthLimit < 32 {
+				depthLimit = 32
+			}
+		} else if depthLimit < 10 {
 			depthLimit = 10
 		}
 		if !stackEntryNodesEquivalentFrontier(a, b, depthLimit) {
 			return false
+		}
+		if lang.Name == "bash" {
+			return true
 		}
 		if a == nil || b == nil {
 			return a == b

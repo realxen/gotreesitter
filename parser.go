@@ -986,7 +986,8 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 			} else {
 				act := actions[0]
-				if act.Type == ParseActionReduce {
+				disableBashReduceChain := p.language != nil && p.language.Name == "bash" && s.gss.head != nil
+				if act.Type == ParseActionReduce && !disableBashReduceChain {
 					p.applyActionWithReduceChain(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 				} else {
 					p.applyAction(s, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
@@ -1256,7 +1257,7 @@ func buildStackCullKeys(stacks []glrStack, lang *Language, buf *[]stackCullKey) 
 	} else {
 		keys = make([]stackCullKey, len(stacks))
 	}
-	needHash := lang != nil && lang.Name == "c_sharp"
+	needHash := lang != nil && (lang.Name == "c_sharp" || lang.Name == "bash")
 	for i := range stacks {
 		s := &stacks[i]
 		top := s.top()
@@ -1290,7 +1291,7 @@ func buildStackCullKeys(stacks []glrStack, lang *Language, buf *[]stackCullKey) 
 }
 
 func compareStackCullKeys(lang *Language, a, b stackCullKey) int {
-	csharp := lang != nil && lang.Name == "c_sharp"
+	useHashTieBreak := lang != nil && (lang.Name == "c_sharp" || lang.Name == "bash")
 	aDead := a.flags&stackCullDeadFlag != 0
 	bDead := b.flags&stackCullDeadFlag != 0
 	if aDead != bDead {
@@ -1319,7 +1320,7 @@ func compareStackCullKeys(lang *Language, a, b stackCullKey) int {
 		}
 		return -1
 	}
-	if !csharp {
+	if !useHashTieBreak {
 		aShifted := a.flags&stackCullShiftedFlag != 0
 		bShifted := b.flags&stackCullShiftedFlag != 0
 		if aShifted != bShifted {
@@ -1330,6 +1331,12 @@ func compareStackCullKeys(lang *Language, a, b stackCullKey) int {
 		}
 	}
 	if a.depth != b.depth {
+		if lang != nil && lang.Name == "bash" {
+			if a.depth < b.depth {
+				return 1
+			}
+			return -1
+		}
 		if a.depth > b.depth {
 			return 1
 		}
@@ -1341,7 +1348,7 @@ func compareStackCullKeys(lang *Language, a, b stackCullKey) int {
 		}
 		return -1
 	}
-	if csharp {
+	if useHashTieBreak {
 		aShifted := a.flags&stackCullShiftedFlag != 0
 		bShifted := b.flags&stackCullShiftedFlag != 0
 		if aShifted != bShifted {

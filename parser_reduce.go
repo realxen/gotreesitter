@@ -589,6 +589,18 @@ func fieldIDAppearsLater(fieldIDs []FieldID, start int, fid FieldID) bool {
 	return false
 }
 
+func flattenedSpanHasFieldID(fieldIDs []FieldID, start, end int, fid FieldID) bool {
+	if fid == 0 || fieldIDs == nil || start >= end {
+		return false
+	}
+	for i := start; i < end; i++ {
+		if fieldIDs[i] == fid {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint16, arena *nodeArena) ([]*Node, []FieldID, []uint8) {
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
@@ -695,6 +707,9 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 				source := fieldSourceDirect
 				if inherited {
 					source = fieldSourceInherited
+				}
+				if inherited && fieldEnd-spanStart == 1 && !flattenedSpanHasFieldID(fieldIDs, spanStart, fieldEnd, fid) {
+					continue
 				}
 				if !inherited || !fieldIDAppearsLater(rawFieldIDs, structuralChildIndex, fid) {
 					applyFieldToFlattenedSpan(children, fieldIDs, fieldSources, spanStart, fieldEnd, fid, source, true)
