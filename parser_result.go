@@ -271,6 +271,7 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 // C tree-sitter attributes trailing trivia to a grouped node but this runtime
 // currently drops it during child normalization.
 func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
+	normalizeCobolLeadingAreaStart(root, source, lang)
 	normalizeCooklangTrailingStepTail(root, source, lang)
 	normalizeFortranStatementLineBreaks(root, source, lang)
 	normalizeHaskellImportsSpan(root, source, lang)
@@ -299,6 +300,53 @@ func bytesContainLineBreak(b []byte) bool {
 		}
 	}
 	return false
+}
+
+func firstNonWhitespaceByte(source []byte) uint32 {
+	for i, c := range source {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return uint32(i)
+		}
+	}
+	return 0
+}
+
+func normalizeCobolLeadingAreaStart(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "cobol" || len(source) == 0 {
+		return
+	}
+	start := firstNonWhitespaceByte(source)
+	if start == 0 {
+		return
+	}
+	startPoint := advancePointByBytes(Point{}, source[:start])
+	setNodeStartTo := func(n *Node) {
+		if n == nil || n.startByte == start {
+			return
+		}
+		n.startByte = start
+		n.startPoint = startPoint
+	}
+	setNodeStartTo(root)
+	if len(root.children) != 1 {
+		return
+	}
+	def := root.children[0]
+	if def == nil || def.Type(lang) != "program_definition" {
+		return
+	}
+	setNodeStartTo(def)
+	if len(def.children) != 1 {
+		return
+	}
+	div := def.children[0]
+	if div == nil || div.Type(lang) != "identification_division" {
+		return
+	}
+	setNodeStartTo(div)
 }
 
 func bytesAreCooklangStepTail(b []byte) bool {

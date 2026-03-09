@@ -149,3 +149,32 @@ func TestFortranProgramCarriesLineBreaks(t *testing.T) {
 		t.Fatalf("fortran program_statement.EndByte=%d, want %d", got, want)
 	}
 }
+
+func TestCobolLeadingAreaStartMatchesC(t *testing.T) {
+	const src = "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. HELLO.\n"
+	tree, lang := parseByLanguageName(t, "cobol", src)
+	root := tree.RootNode()
+	if root.HasError() {
+		t.Fatalf("unexpected cobol parse error: %s", root.SExpr(lang))
+	}
+	if got, want := root.StartByte(), uint32(7); got != want {
+		t.Fatalf("cobol root.StartByte=%d, want %d", got, want)
+	}
+	if root.ChildCount() != 1 {
+		t.Fatalf("cobol root childCount=%d, want 1", root.ChildCount())
+	}
+	def := root.Child(0)
+	if def == nil || def.Type(lang) != "program_definition" {
+		t.Fatalf("cobol child=%v, want program_definition", def)
+	}
+	if got, want := def.StartByte(), uint32(7); got != want {
+		t.Fatalf("cobol program_definition.StartByte=%d, want %d", got, want)
+	}
+	div := def.Child(0)
+	if div == nil || div.Type(lang) != "identification_division" {
+		t.Fatalf("cobol grandchild=%v, want identification_division", div)
+	}
+	if got, want := div.StartByte(), uint32(7); got != want {
+		t.Fatalf("cobol identification_division.StartByte=%d, want %d", got, want)
+	}
+}
