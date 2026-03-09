@@ -123,3 +123,29 @@ func TestCooklangStepCarriesTerminalPunctuationAndRootNewline(t *testing.T) {
 		t.Fatalf("cooklang root.EndByte=%d, want %d", got, want)
 	}
 }
+
+func TestFortranProgramCarriesLineBreaks(t *testing.T) {
+	const src = "program hello\n  implicit none\nend program hello\n"
+	tree, lang := parseByLanguageName(t, "fortran", src)
+	root := tree.RootNode()
+	if root.HasError() {
+		t.Fatalf("unexpected fortran parse error: %s", root.SExpr(lang))
+	}
+	if root.ChildCount() != 1 {
+		t.Fatalf("fortran root childCount=%d, want 1", root.ChildCount())
+	}
+	program := root.Child(0)
+	if program == nil || program.Type(lang) != "program" {
+		t.Fatalf("fortran child=%v, want program", program)
+	}
+	if got, want := program.EndByte(), root.EndByte(); got != want {
+		t.Fatalf("fortran program.EndByte=%d, want root.EndByte=%d", got, want)
+	}
+	stmt := program.Child(0)
+	if stmt == nil || stmt.Type(lang) != "program_statement" {
+		t.Fatalf("fortran first child=%v, want program_statement", stmt)
+	}
+	if got, want := stmt.EndByte(), uint32(14); got != want {
+		t.Fatalf("fortran program_statement.EndByte=%d, want %d", got, want)
+	}
+}

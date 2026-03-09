@@ -272,6 +272,7 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 // currently drops it during child normalization.
 func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeCooklangTrailingStepTail(root, source, lang)
+	normalizeFortranStatementLineBreaks(root, source, lang)
 	normalizeHaskellImportsSpan(root, source, lang)
 	normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	normalizeScalaTrailingCommentOwnership(root, source, lang)
@@ -347,12 +348,60 @@ func normalizeCooklangTrailingStepTail(root *Node, source []byte, lang *Language
 	}
 }
 
+func lineBreakEndAt(source []byte, start, limit uint32) uint32 {
+	if start >= limit || start >= uint32(len(source)) {
+		return 0
+	}
+	switch source[start] {
+	case '\n':
+		return start + 1
+	case '\r':
+		if start+1 < limit && start+1 < uint32(len(source)) && source[start+1] == '\n' {
+			return start + 2
+		}
+		return start + 1
+	default:
+		return 0
+	}
+}
+
+func normalizeFortranStatementLineBreaks(root *Node, source []byte, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "fortran" || len(source) == 0 {
+		return
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "program" {
+			for i := 0; i+1 < len(n.children); i++ {
+				cur := n.children[i]
+				next := n.children[i+1]
+				if cur == nil || next == nil || cur.endByte >= next.startByte {
+					continue
+				}
+				if cur.Type(lang) != "program_statement" {
+					continue
+				}
+				if end := lineBreakEndAt(source, cur.endByte, next.startByte); end > cur.endByte {
+					extendNodeEndTo(cur, end, source)
+				}
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
 func normalizeTopLevelTrailingLineBreakSpan(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || len(source) == 0 {
 		return
 	}
 	switch lang.Name {
-	case "caddy", "pug":
+	case "caddy", "fortran", "pug":
 	default:
 		return
 	}
