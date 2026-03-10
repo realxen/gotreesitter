@@ -414,6 +414,7 @@ func scanElixirBinaryOperatorAfterNewline(lexer *gotreesitter.ExternalLexer) boo
 				lexer.Advance(false)
 				return checkElixirOperatorEnd(lexer)
 			}
+			return false
 		}
 		return checkElixirOperatorEnd(lexer)
 	case '>':
