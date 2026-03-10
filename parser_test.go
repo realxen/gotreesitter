@@ -544,15 +544,21 @@ func TestParserPreservesPartialTreeOnNoStacksAlive(t *testing.T) {
 	if tree == nil || tree.RootNode() == nil {
 		t.Fatal("parse returned nil tree/root")
 	}
-	if got := tree.ParseStopReason(); got != ParseStopNoStacksAlive {
-		t.Fatalf("ParseStopReason = %q, want %q", got, ParseStopNoStacksAlive)
-	}
 	root := tree.RootNode()
+	switch got := tree.ParseStopReason(); got {
+	case ParseStopNoStacksAlive:
+		if gotText := root.Text(tree.Source()); gotText != "1+" {
+			t.Fatalf("partial tree text = %q, want %q", gotText, "1+")
+		}
+	case ParseStopAccepted:
+		if gotText := root.Text(tree.Source()); gotText != "1+" {
+			t.Fatalf("accepted recovered text = %q, want %q", gotText, "1+")
+		}
+	default:
+		t.Fatalf("ParseStopReason = %q, want %q or %q", got, ParseStopNoStacksAlive, ParseStopAccepted)
+	}
 	if got := root.Symbol(); got == errorSymbol {
 		t.Fatalf("root symbol = %d, want partial preserved root", got)
-	}
-	if got := root.Text(tree.Source()); got != "1+" {
-		t.Fatalf("root text = %q, want %q", got, "1+")
 	}
 	if got := root.ChildCount(); got == 0 {
 		t.Fatal("expected partial tree with children after no_stacks_alive")

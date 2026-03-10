@@ -60,6 +60,10 @@ const (
 	// maxConsecutivePrimaryReduces prevents infinite reduce loops on the
 	// primary stack when no token advancement occurs.
 	maxConsecutivePrimaryReduces = 256
+	// maxConsecutiveMissingSingleShifts prevents single-stack recovery from
+	// cycling forever by repeatedly inserting the same missing token before
+	// the same lookahead without advancing the parse position.
+	maxConsecutiveMissingSingleShifts = 16
 	// Allow a small temporary oversubscription on full parses before
 	// triggering expensive global stack culling, mirroring the C runtime's
 	// version overflow window.
@@ -371,6 +375,12 @@ func (p *Parser) tryInsertMissingSingleShift(s *glrStack, tok Token, nodeCount *
 		StartPoint: tok.StartPoint,
 		EndPoint:   tok.StartPoint,
 		Missing:    true,
+	}
+	if top := s.top().node; top != nil && top.endByte <= tok.StartByte {
+		missingTok.StartByte = top.endByte
+		missingTok.EndByte = top.endByte
+		missingTok.StartPoint = top.endPoint
+		missingTok.EndPoint = top.endPoint
 	}
 	p.applyAction(s, candidateAct, missingTok, new(bool), nodeCount, arena, entryScratch, gssScratch, nil, false, trackChildErrors)
 	s.shifted = false
@@ -905,6 +915,23 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		arena.Release()
 		return finalizeTree(parseErrorTree(source, p.language), stopReason)
 	}
+	finalizeRecoveredNodes := func(nodes []*Node) *Tree {
+		tree := p.buildResultFromNodes(nodes, source, arena, oldTree, &reuseState, &scratch.nodeLinks)
+		if root := tree.RootNode(); root != nil {
+			normalizeSQLRecoveredMissingNull(root, arena, p.language)
+			for _, child := range root.children {
+				trimRecoveryWhitespaceTail(child, source)
+			}
+			wireParentLinksWithScratch(root, &scratch.nodeLinks)
+		}
+		return finalizeTree(tree, ParseStopAccepted)
+	}
+	tryFinalizeTrailingEOFSuffix := func(s *glrStack, tok Token) (*Tree, bool) {
+		if nodes, ok := p.tryRecoverTrailingEOFSuffix(s, tok, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, source); ok {
+			return finalizeRecoveredNodes(nodes), true
+		}
+		return nil, false
+	}
 
 	var stacksBuf [4]glrStack
 	stacks := stacksBuf[:1]
@@ -988,6 +1015,45 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	var lastReduceState StateID
 	lastReduceDepth := -1
 	var consecutiveReduces int
+	var lastMissingShiftState StateID
+	lastMissingShiftDepth := -1
+	var lastMissingShiftSymbol Symbol
+	var lastMissingShiftStartByte uint32
+	var lastMissingShiftEndByte uint32
+	var consecutiveMissingShifts int
+	tryMissingSingleShift := func(stackIndex int, s *glrStack, currentState StateID) bool {
+		missingShiftDepth := s.depth()
+		if lastMissingShiftState == currentState &&
+			lastMissingShiftDepth == missingShiftDepth &&
+			lastMissingShiftSymbol == tok.Symbol &&
+			lastMissingShiftStartByte == tok.StartByte &&
+			lastMissingShiftEndByte == tok.EndByte &&
+			consecutiveMissingShifts >= maxConsecutiveMissingSingleShifts {
+			if p.glrTrace {
+				fmt.Printf("  stack[%d] SKIP missing-shift cycle state=%d sym=%d byte=%d..%d count=%d\n",
+					stackIndex, currentState, tok.Symbol, tok.StartByte, tok.EndByte, consecutiveMissingShifts)
+			}
+			return false
+		}
+		if !p.tryInsertMissingSingleShift(s, tok, &nodeCount, arena, &scratch.entries, &scratch.gss, &trackChildErrors) {
+			return false
+		}
+		if lastMissingShiftState == currentState &&
+			lastMissingShiftDepth == missingShiftDepth &&
+			lastMissingShiftSymbol == tok.Symbol &&
+			lastMissingShiftStartByte == tok.StartByte &&
+			lastMissingShiftEndByte == tok.EndByte {
+			consecutiveMissingShifts++
+		} else {
+			lastMissingShiftState = currentState
+			lastMissingShiftDepth = missingShiftDepth
+			lastMissingShiftSymbol = tok.Symbol
+			lastMissingShiftStartByte = tok.StartByte
+			lastMissingShiftEndByte = tok.EndByte
+			consecutiveMissingShifts = 1
+		}
+		return true
+	}
 
 	for iter := 0; iter < maxIter; iter++ {
 		if p.timeoutMicros > 0 {
@@ -1140,6 +1206,8 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			for si := range stacks {
 				stacks[si].shifted = false
 			}
+			lastMissingShiftDepth = -1
+			consecutiveMissingShifts = 0
 		}
 
 		// Incremental parsing fast-path: when there is a single active stack,
@@ -1238,16 +1306,8 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 							if p.canFinalizeNoActionEOF(s) {
 								return finalize(stacks, ParseStopAccepted)
 							}
-							if nodes, ok := p.tryRecoverTrailingEOFSuffix(s, tok, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, source); ok {
-								tree := p.buildResultFromNodes(nodes, source, arena, oldTree, &reuseState, &scratch.nodeLinks)
-								if root := tree.RootNode(); root != nil {
-									normalizeSQLRecoveredMissingNull(root, arena, p.language)
-									for _, child := range root.children {
-										trimRecoveryWhitespaceTail(child, source)
-									}
-									wireParentLinksWithScratch(root, &scratch.nodeLinks)
-								}
-								return finalizeTree(tree, ParseStopAccepted)
+							if tree, ok := tryFinalizeTrailingEOFSuffix(s, tok); ok {
+								return tree
 							}
 							s.dead = true
 							continue
@@ -1274,7 +1334,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 				// Try grammar-directed recovery by searching the stack for
 				// the nearest state that can recover on this lookahead.
-				if p.tryInsertMissingSingleShift(s, tok, &nodeCount, arena, &scratch.entries, &scratch.gss, &trackChildErrors) {
+				if tryMissingSingleShift(si, s, currentState) {
 					anyReduced = true
 					needToken = false
 					consecutiveReduces = 0
@@ -1438,6 +1498,11 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 
 				currentState := stacks[0].top().state
+				if tryMissingSingleShift(bestIdx, &stacks[0], currentState) {
+					anyReduced = true
+					needToken = false
+					consecutiveReduces = 0
+				} else
 				// Try grammar-directed recovery first.
 				if depth, recoverAct, ok := p.findRecoverActionOnStack(&stacks[0], tok.Symbol, timing); ok {
 					if stacks[0].truncate(depth + 1) {
@@ -1473,6 +1538,15 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 					consecutiveReduces = 1
 				}
 				if consecutiveReduces > maxConsecutivePrimaryReduces {
+					if tok.Symbol == 0 && tok.StartByte == tok.EndByte && !tok.NoLookahead && len(stacks) == 1 {
+						if tree, ok := tryFinalizeTrailingEOFSuffix(&stacks[0], tok); ok {
+							return tree
+						}
+						if p.canFinalizeNoActionEOF(&stacks[0]) {
+							return finalize(stacks, ParseStopAccepted)
+						}
+						return finalize(stacks, ParseStopNoStacksAlive)
+					}
 					needToken = true
 					lastReduceDepth = -1
 					consecutiveReduces = 0
