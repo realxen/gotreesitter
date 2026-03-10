@@ -341,6 +341,7 @@ func (d *dfaTokenSource) nextGLRUnionDFAToken() (Token, bool) {
 		candVisible := int(candTok.Symbol) < len(d.language.SymbolMetadata) && d.language.SymbolMetadata[candTok.Symbol].Visible
 		better := !bestFound ||
 			candTok.StartByte < bestTok.StartByte ||
+			(candTok.StartByte == bestTok.StartByte && d.preferSpecificTokenOnExactMatch(candTok, candEndPos, bestTok, bestEndPos)) ||
 			(candTok.StartByte == bestTok.StartByte && score > bestScore) ||
 			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte > bestTok.EndByte) ||
 			(candTok.StartByte == bestTok.StartByte && score == bestScore && candTok.EndByte == bestTok.EndByte && candEndPos > bestEndPos) ||
@@ -395,6 +396,42 @@ func (d *dfaTokenSource) normalizeDFAToken(tok Token, endPos int, endRow, endCol
 		tok.Text = tok.Text[:1]
 	}
 	return tok, start + 1, tok.StartPoint.Row + 1, 0
+}
+
+func (d *dfaTokenSource) preferSpecificTokenOnExactMatch(candTok Token, candEndPos int, bestTok Token, bestEndPos int) bool {
+	if d == nil || d.language == nil {
+		return false
+	}
+	if candTok.StartByte != bestTok.StartByte || candTok.EndByte != bestTok.EndByte || candEndPos != bestEndPos {
+		return false
+	}
+	if d.language.KeywordCaptureToken != 0 {
+		candIsCapture := candTok.Symbol == d.language.KeywordCaptureToken
+		bestIsCapture := bestTok.Symbol == d.language.KeywordCaptureToken
+		if bestIsCapture != candIsCapture {
+			return bestIsCapture && !candIsCapture
+		}
+	}
+	candMeta, candOK := d.symbolMetadata(candTok.Symbol)
+	bestMeta, bestOK := d.symbolMetadata(bestTok.Symbol)
+	if !candOK || !bestOK {
+		return false
+	}
+	if candMeta.Visible != bestMeta.Visible {
+		return candMeta.Visible
+	}
+	return candMeta.Visible && !candMeta.Named && bestMeta.Visible && bestMeta.Named
+}
+
+func (d *dfaTokenSource) symbolMetadata(sym Symbol) (SymbolMetadata, bool) {
+	if d == nil || d.language == nil {
+		return SymbolMetadata{}, false
+	}
+	idx := int(sym)
+	if idx < 0 || idx >= len(d.language.SymbolMetadata) {
+		return SymbolMetadata{}, false
+	}
+	return d.language.SymbolMetadata[idx], true
 }
 
 func (d *dfaTokenSource) hasAnyActionForSymbol(sym Symbol) bool {

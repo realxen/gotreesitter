@@ -613,6 +613,24 @@ func flattenedSpanHasAnyDirectField(children []*Node, fieldIDs []FieldID, fieldS
 	return false
 }
 
+func flattenedSpanSingleDescendantFieldTarget(children []*Node, start, end int, fid FieldID) (int, bool) {
+	if fid == 0 {
+		return 0, false
+	}
+	target := -1
+	for i := start; i < end; i++ {
+		child := children[i]
+		if child == nil || child.isExtra || !nodeHasDirectFieldID(child, fid) {
+			continue
+		}
+		if target >= 0 {
+			return 0, false
+		}
+		target = i
+	}
+	return target, target >= 0
+}
+
 func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCount int, parentSymbol Symbol, productionID uint16, arena *nodeArena) ([]*Node, []FieldID, []uint8) {
 	lang := p.language
 	symbolMeta := lang.SymbolMetadata
@@ -720,14 +738,31 @@ func (p *Parser) buildReduceChildren(entries []stackEntry, start, end, childCoun
 				if inherited {
 					source = fieldSourceInherited
 				}
+				if inherited && !flattenedSpanHasFieldID(fieldIDs, spanStart, fieldEnd, fid) {
+					if target, ok := flattenedSpanSingleDescendantFieldTarget(children, spanStart, fieldEnd, fid); ok {
+						fieldIDs[target] = fid
+						fieldSources[target] = fieldSourceInherited
+						normalizeMixedSourceFieldSpan(fieldIDs, fieldSources, spanStart, fieldEnd)
+						continue
+					}
+				}
 				if inherited && fieldEnd-spanStart == 1 && !flattenedSpanHasFieldID(fieldIDs, spanStart, fieldEnd, fid) {
-					continue
+					child := children[spanStart]
+					if child == nil || !nodeHasDirectFieldID(child, fid) {
+						continue
+					}
 				}
 				if inherited && n.isNamed && !flattenedSpanHasFieldID(fieldIDs, spanStart, fieldEnd, fid) && countEligibleNamedFieldTargets(children, fieldIDs, spanStart, fieldEnd) > 1 {
 					continue
 				}
 				if inherited && !flattenedSpanHasFieldID(fieldIDs, spanStart, fieldEnd, fid) && flattenedSpanHasAnyDirectField(children, fieldIDs, fieldSources, spanStart, fieldEnd) {
-					continue
+					if fieldEnd-spanStart != 1 {
+						continue
+					}
+					child := children[spanStart]
+					if child == nil || !nodeHasDirectFieldID(child, fid) {
+						continue
+					}
 				}
 				if !inherited || !fieldIDAppearsLater(rawFieldIDs, structuralChildIndex, fid) {
 					applyFieldToFlattenedSpan(children, fieldIDs, fieldSources, spanStart, fieldEnd, fid, source, true)
@@ -1010,7 +1045,7 @@ func applyFieldToFlattenedSpan(children []*Node, fieldIDs []FieldID, fieldSource
 		if preferNamed && !allowAnonymousSingleDirectTarget && !children[j].isNamed {
 			continue
 		}
-		if inherited && nodeHasDirectFieldID(children[j], fid) {
+		if inherited && nodeHasDirectFieldID(children[j], fid) && end-start != 1 {
 			continue
 		}
 		if source == fieldSourceDirect {

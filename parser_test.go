@@ -1492,6 +1492,47 @@ func TestBuildReduceChildrenInheritedFieldSkipsProjectionWhenDescendantHasDirect
 	}
 }
 
+func TestBuildReduceChildrenInheritedFieldProjectsSingleHiddenChildWhenDescendantHasDirectField(t *testing.T) {
+	lang := &Language{
+		SymbolNames: []string{"EOF", "_hidden", "call", "identifier", "arguments", "visible_parent"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "_hidden", Visible: false, Named: false},
+			{Name: "call", Visible: true, Named: true},
+			{Name: "identifier", Visible: true, Named: true},
+			{Name: "arguments", Visible: true, Named: true},
+			{Name: "visible_parent", Visible: true, Named: true},
+		},
+		FieldNames: []string{"", "target"},
+		FieldMapSlices: [][2]uint16{
+			{0, 1},
+		},
+		FieldMapEntries: []FieldMapEntry{
+			{FieldID: 1, ChildIndex: 0, Inherited: true},
+		},
+	}
+
+	parser := NewParser(lang)
+	arena := newNodeArena(arenaClassFull)
+	ident := newLeafNodeInArena(arena, 3, true, 0, 7, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 7})
+	callArgs := newLeafNodeInArena(arena, 4, true, 7, 10, Point{Row: 0, Column: 7}, Point{Row: 0, Column: 10})
+	call := newParentNodeInArena(arena, 2, true, []*Node{ident, callArgs}, []FieldID{1, 0}, 0)
+	call.fieldSources = []uint8{fieldSourceDirect, fieldSourceNone}
+	outerArgs := newLeafNodeInArena(arena, 4, true, 10, 13, Point{Row: 0, Column: 10}, Point{Row: 0, Column: 13})
+	hidden := newParentNodeInArena(arena, 1, false, []*Node{call, outerArgs}, nil, 0)
+
+	children, fieldIDs, fieldSources := parser.buildReduceChildren([]stackEntry{{node: hidden}}, 0, 1, 1, 5, 0, arena)
+	if got, want := len(children), 2; got != want {
+		t.Fatalf("len(children) = %d, want %d", got, want)
+	}
+	if got, want := fieldIDs[0], FieldID(1); got != want {
+		t.Fatalf("fieldIDs[0] = %d, want %d", got, want)
+	}
+	if got, want := fieldSourceAt(fieldSources, 0), uint8(fieldSourceInherited); got != want {
+		t.Fatalf("fieldSources[0] = %d, want %d", got, want)
+	}
+}
+
 func TestBuildReduceChildrenNoAliasNoFieldsInlinesHiddenChildren(t *testing.T) {
 	lang := &Language{
 		SymbolNames: []string{"EOF", "_hidden", "identifier", "operator"},
