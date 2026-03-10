@@ -259,3 +259,54 @@ func TestCSharpTypeConstraintNotnullRegression(t *testing.T) {
 		t.Fatalf("constraint child field = %q, want empty: %s", got, constraint.SExpr(lang))
 	}
 }
+
+func TestCSharpSwitchTupleCasePatternRegression(t *testing.T) {
+	lang := CSharpLanguage()
+	parser := gotreesitter.NewParser(lang)
+
+	src := []byte(`class C
+{
+    int M(int a)
+    {
+        switch (a, a)
+        {
+            case (1, 1):
+                return 1;
+            default:
+                return 0;
+        }
+    }
+}`)
+
+	tree, err := parser.Parse(src)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil || root.HasError() {
+		t.Fatalf("unexpected error tree: %s", root.SExpr(lang))
+	}
+
+	section := findFirstNamedDescendantWhere(root, lang, "switch_section", func(node *gotreesitter.Node) bool {
+		return strings.Contains(node.Text(src), "case (1, 1):")
+	})
+	if section == nil {
+		t.Fatalf("missing switch_section in tree: %s", root.SExpr(lang))
+	}
+	if got := section.NamedChildCount(); got < 1 {
+		t.Fatalf("switch_section named child count = %d, want >= 1: %s", got, section.SExpr(lang))
+	}
+	pattern := section.NamedChild(0)
+	if pattern == nil {
+		t.Fatalf("switch_section missing first named child: %s", section.SExpr(lang))
+	}
+	if got := pattern.Type(lang); got != "constant_pattern" {
+		t.Fatalf("pattern type = %q, want constant_pattern: %s", got, section.SExpr(lang))
+	}
+	if got := pattern.NamedChildCount(); got != 1 {
+		t.Fatalf("constant_pattern named child count = %d, want 1: %s", got, pattern.SExpr(lang))
+	}
+	if got := pattern.NamedChild(0).Type(lang); got != "tuple_expression" {
+		t.Fatalf("constant_pattern child type = %q, want tuple_expression: %s", got, pattern.SExpr(lang))
+	}
+}

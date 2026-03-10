@@ -278,6 +278,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeNginxAttributeLineBreaks(root, source, lang)
 	normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
 	normalizeCSharpTypeConstraintKeywords(root, lang)
+	normalizeCSharpSwitchTupleCasePatterns(root, lang)
 	normalizeScalaTrailingCommentOwnership(root, source, lang)
 	normalizeScalaFunctionModifierFields(root, lang)
 	normalizeScalaInterpolatedStringTail(root, source, lang)
@@ -543,6 +544,40 @@ func normalizeCSharpTypeConstraintKeywords(root *Node, lang *Language) {
 						n.fieldSources[0] = fieldSourceNone
 					}
 				}
+			}
+		}
+		for _, child := range n.children {
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func normalizeCSharpSwitchTupleCasePatterns(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "c_sharp" {
+		return
+	}
+	patternSym, ok := lang.SymbolByName("constant_pattern")
+	if !ok {
+		return
+	}
+	named := false
+	if idx := int(patternSym); idx < len(lang.SymbolMetadata) {
+		named = lang.SymbolMetadata[patternSym].Named
+	}
+	var walk func(*Node)
+	walk = func(n *Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "switch_section" && len(n.children) > 1 {
+			pat := n.children[1]
+			if n.children[0] != nil && n.children[0].Type(lang) == "case" &&
+				pat != nil && pat.Type(lang) == "tuple_expression" {
+				repl := newParentNodeInArena(n.ownerArena, patternSym, named, []*Node{pat}, nil, 0)
+				repl.parent = n
+				repl.childIndex = 1
+				n.children[1] = repl
 			}
 		}
 		for _, child := range n.children {
