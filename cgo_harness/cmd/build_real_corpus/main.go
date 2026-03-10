@@ -969,7 +969,7 @@ func looksCorpusCandidatePath(relPath string, includeFixtures bool, specialNames
 		strings.Contains(rel, "/vendor/") ||
 		strings.Contains(rel, "/dist/") ||
 		strings.Contains(rel, "/build/") {
-		if !isAllowedSourceBindingPath(rel) {
+		if !isAllowedSourceMetadataPath(rel) && !isAllowedSourceBindingPath(rel) {
 			return false
 		}
 	}
@@ -1008,6 +1008,17 @@ func isAllowedSourceBindingPath(rel string) bool {
 		strings.Contains(rel, "/bindings/r/r/") ||
 		rel == "bindings/r/bootstrap.r" ||
 		strings.HasSuffix(rel, "/bindings/r/bootstrap.r")
+}
+
+func isAllowedSourceMetadataPath(rel string) bool {
+	rel = strings.ToLower(filepath.ToSlash(rel))
+	if !strings.HasSuffix(rel, ".yml") && !strings.HasSuffix(rel, ".yaml") {
+		return false
+	}
+	return strings.HasPrefix(rel, ".github/workflows/") ||
+		strings.Contains(rel, "/.github/workflows/") ||
+		strings.HasPrefix(rel, ".github/issue_template/") ||
+		strings.Contains(rel, "/.github/issue_template/")
 }
 
 func looksGenericSourcePath(relPath string, includeFixtures bool) bool {

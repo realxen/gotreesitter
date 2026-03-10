@@ -305,6 +305,32 @@ func TestCollectCandidatesAllowsNarrowRBindingsSourcePaths(t *testing.T) {
 	}
 }
 
+func TestCollectCandidatesAllowsYamlGithubWorkflowSources(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteSizedText(t, filepath.Join(tmp, ".github", "workflows", "ci.yml"), 2400)
+	mustWriteSizedText(t, filepath.Join(tmp, ".github", "ISSUE_TEMPLATE", "bug_report.yaml"), 2300)
+	mustWriteSizedText(t, filepath.Join(tmp, ".github", "workflows", "ci.json"), 2400)
+
+	candidates, err := collectCandidates(tmp, []string{".yaml", ".yml"}, defaultMaxBytes, false)
+	if err != nil {
+		t.Fatalf("collectCandidates: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		seen[filepath.ToSlash(c.RelPath)] = true
+	}
+	if !seen[".github/workflows/ci.yml"] {
+		t.Fatalf("expected workflow yaml candidate missing: %#v", candidates)
+	}
+	if !seen[".github/ISSUE_TEMPLATE/bug_report.yaml"] {
+		t.Fatalf("expected issue template yaml candidate missing: %#v", candidates)
+	}
+	if seen[".github/workflows/ci.json"] {
+		t.Fatalf("non-yaml workflow file should remain excluded: %#v", candidates)
+	}
+}
+
 func TestCandidateMatchersForLanguageInfersKnownExtensionsAndNames(t *testing.T) {
 	tests := []struct {
 		lang      string
