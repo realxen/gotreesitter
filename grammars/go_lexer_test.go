@@ -64,3 +64,60 @@ func TestGoTokenSourceSkipToByteReseek(t *testing.T) {
 		t.Fatalf("expected identifier token text %q, got %q", "target", tok.Text)
 	}
 }
+
+func TestGoTokenSourceRuneLiteralColumnsCountUTF8Bytes(t *testing.T) {
+	lang := GoLanguage()
+	src := []byte("package p\nvar _ = []struct{ from, to rune }{{'Å', 'Å'}}\n")
+
+	offset := strings.Index(string(src), "'Å'")
+	if offset < 0 {
+		t.Fatal("missing rune literal")
+	}
+
+	ts, err := NewGoTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewGoTokenSource failed: %v", err)
+	}
+
+	tok := ts.SkipToByte(uint32(offset))
+	if tok.Text != "'Å'" {
+		t.Fatalf("SkipToByte token = %q, want %q", tok.Text, "'Å'")
+	}
+
+	gotWidth := tok.EndPoint.Column - tok.StartPoint.Column
+	wantWidth := uint32(len(tok.Text))
+	if gotWidth != wantWidth {
+		t.Fatalf("rune literal column width = %d, want %d", gotWidth, wantWidth)
+	}
+}
+
+func TestGoTokenSourceSplitsInterpretedStringEscapes(t *testing.T) {
+	lang := GoLanguage()
+	src := []byte("package p\nvar _ = \"\\u13b0\\uab80\"\n")
+
+	ts, err := NewGoTokenSource(src, lang)
+	if err != nil {
+		t.Fatalf("NewGoTokenSource failed: %v", err)
+	}
+
+	var saw []string
+	for {
+		tok := ts.Next()
+		if tok.Symbol == 0 {
+			break
+		}
+		if tok.StartByte < uint32(strings.Index(string(src), "\"\\u13b0\\uab80\"")) || tok.EndByte > uint32(len(src)) {
+			continue
+		}
+		switch tok.Text {
+		case "\"", "\\u13b0", "\\uab80":
+			saw = append(saw, tok.Text)
+		}
+	}
+
+	got := strings.Join(saw, ",")
+	want := "\",\\u13b0,\\uab80,\""
+	if got != want {
+		t.Fatalf("interpreted string token split = %q, want %q", got, want)
+	}
+}

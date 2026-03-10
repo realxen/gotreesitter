@@ -58,6 +58,7 @@ type GoTokenSource struct {
 	interpretedStringContentSymbol    gotreesitter.Symbol
 	rawStringQuoteSymbol              gotreesitter.Symbol
 	rawStringContentSymbol            gotreesitter.Symbol
+	escapeSequenceSymbol              gotreesitter.Symbol
 
 	// Incremental position tracking for offsetToPoint.
 	// Instead of scanning from byte 0 every call (O(n²) over a file),
@@ -84,6 +85,7 @@ type goLexerTables struct {
 	interpretedStringContentSymbol    gotreesitter.Symbol
 	rawStringQuoteSymbol              gotreesitter.Symbol
 	rawStringContentSymbol            gotreesitter.Symbol
+	escapeSequenceSymbol              gotreesitter.Symbol
 	keywordNewSymbol                  gotreesitter.Symbol
 	keywordMakeSymbol                 gotreesitter.Symbol
 	keywordNilSymbol                  gotreesitter.Symbol
@@ -494,20 +496,7 @@ func (ts *GoTokenSource) splitString(offset int, lit string) gotreesitter.Token 
 		EndPoint:   ts.offsetToPoint(openEnd),
 	}
 
-	// Content (between quotes, may be empty)
-	contentStart := offset + 1
-	contentEnd := offset + len(lit) - 1
-	if contentEnd > contentStart {
-		content := lit[1 : len(lit)-1]
-		ts.pending = append(ts.pending, gotreesitter.Token{
-			Symbol:     ts.interpretedStringContentSymbol,
-			Text:       content,
-			StartByte:  uint32(contentStart),
-			EndByte:    uint32(contentEnd),
-			StartPoint: ts.offsetToPoint(contentStart),
-			EndPoint:   ts.offsetToPoint(contentEnd),
-		})
-	}
+	ts.splitInterpretedStringContent(offset+1, lit[1:len(lit)-1])
 
 	// Close quote
 	closeStart := offset + len(lit) - 1
@@ -522,6 +511,79 @@ func (ts *GoTokenSource) splitString(offset int, lit string) gotreesitter.Token 
 	})
 
 	return openTok
+}
+
+func (ts *GoTokenSource) splitInterpretedStringContent(contentOffset int, content string) {
+	if len(content) == 0 {
+		return
+	}
+	segmentStart := 0
+	flushContent := func(end int) {
+		if end <= segmentStart {
+			return
+		}
+		startByte := contentOffset + segmentStart
+		endByte := contentOffset + end
+		ts.pending = append(ts.pending, gotreesitter.Token{
+			Symbol:     ts.interpretedStringContentSymbol,
+			Text:       content[segmentStart:end],
+			StartByte:  uint32(startByte),
+			EndByte:    uint32(endByte),
+			StartPoint: ts.offsetToPoint(startByte),
+			EndPoint:   ts.offsetToPoint(endByte),
+		})
+	}
+
+	for i := 0; i < len(content); {
+		if content[i] != '\\' {
+			i++
+			continue
+		}
+		flushContent(i)
+		escLen := goStringEscapeLen(content[i:])
+		startByte := contentOffset + i
+		endByte := startByte + escLen
+		ts.pending = append(ts.pending, gotreesitter.Token{
+			Symbol:     ts.escapeSequenceSymbol,
+			Text:       content[i : i+escLen],
+			StartByte:  uint32(startByte),
+			EndByte:    uint32(endByte),
+			StartPoint: ts.offsetToPoint(startByte),
+			EndPoint:   ts.offsetToPoint(endByte),
+		})
+		i += escLen
+		segmentStart = i
+	}
+	flushContent(len(content))
+}
+
+func goStringEscapeLen(s string) int {
+	if len(s) < 2 || s[0] != '\\' {
+		return 1
+	}
+	switch s[1] {
+	case 'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '\'', '"':
+		return 2
+	case 'x':
+		if len(s) >= 4 {
+			return 4
+		}
+	case 'u':
+		if len(s) >= 6 {
+			return 6
+		}
+	case 'U':
+		if len(s) >= 10 {
+			return 10
+		}
+	default:
+		if s[1] >= '0' && s[1] <= '7' {
+			if len(s) >= 4 {
+				return 4
+			}
+		}
+	}
+	return 2
 }
 
 // splitRawString handles raw string literals (`content`).
@@ -611,7 +673,7 @@ func (ts *GoTokenSource) offsetToPoint(offset int) gotreesitter.Point {
 			row++
 			col = 0
 		} else {
-			col++
+			col += uint32(size)
 		}
 		i += size
 	}
@@ -691,6 +753,7 @@ func (ts *GoTokenSource) buildMaps() error {
 	ts.interpretedStringOpenQuoteSymbol = tokenSymAt("\"", 0)
 	ts.interpretedStringCloseQuoteSymbol = tokenSymAt("\"", 1)
 	ts.interpretedStringContentSymbol = tokenSym("interpreted_string_literal_content")
+	ts.escapeSequenceSymbol = tokenSym("escape_sequence")
 
 	symbolMap := map[token.Token]gotreesitter.Symbol{
 		token.SEMICOLON:      tokenSym(";"),
@@ -805,6 +868,7 @@ func (ts *GoTokenSource) buildMaps() error {
 		interpretedStringContentSymbol:    ts.interpretedStringContentSymbol,
 		rawStringQuoteSymbol:              ts.rawStringQuoteSymbol,
 		rawStringContentSymbol:            ts.rawStringContentSymbol,
+		escapeSequenceSymbol:              ts.escapeSequenceSymbol,
 		keywordNewSymbol:                  ts.keywordNewSymbol,
 		keywordMakeSymbol:                 ts.keywordMakeSymbol,
 		keywordNilSymbol:                  ts.keywordNilSymbol,
@@ -838,6 +902,7 @@ func (ts *GoTokenSource) applyLexerTables(tables *goLexerTables) {
 	ts.interpretedStringContentSymbol = tables.interpretedStringContentSymbol
 	ts.rawStringQuoteSymbol = tables.rawStringQuoteSymbol
 	ts.rawStringContentSymbol = tables.rawStringContentSymbol
+	ts.escapeSequenceSymbol = tables.escapeSequenceSymbol
 	ts.keywordNewSymbol = tables.keywordNewSymbol
 	ts.keywordMakeSymbol = tables.keywordMakeSymbol
 	ts.keywordNilSymbol = tables.keywordNilSymbol
