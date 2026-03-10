@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -437,6 +438,64 @@ func TestCollectCandidatesFromRepoCacheSkipsPrimaryBasenameDuplicate(t *testing.
 	}
 }
 
+func TestLoadProfileSupportsPinnedSecondarySources(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.json")
+	raw := profileFile{
+		Name:      "top50",
+		Languages: []string{"clojure", "tsx"},
+		Sources: []profileSource{{
+			Language: "clojure",
+			RepoURL:  "https://github.com/metabase/metabase",
+			Commit:   "5cd8e165fa88b34e82d2e5cafee478715b4e53a5",
+			Subdir:   "src",
+		}},
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	profile, err := loadProfile(path)
+	if err != nil {
+		t.Fatalf("loadProfile: %v", err)
+	}
+	if got, want := len(profile.Sources), 1; got != want {
+		t.Fatalf("len(profile.Sources) = %d, want %d", got, want)
+	}
+	if got, want := profile.Sources[0].Language, "clojure"; got != want {
+		t.Fatalf("profile.Sources[0].Language = %q, want %q", got, want)
+	}
+}
+
+func TestCollectCandidatesFromProfileSourcesUsesPinnedRepoAndSubdir(t *testing.T) {
+	cacheRoot := t.TempDir()
+	sourceRepo := t.TempDir()
+	initGitRepo(t, sourceRepo, "https://example.com/curated/clojure.git")
+	mustWriteSizedText(t, filepath.Join(sourceRepo, "pkg", "examples", "backfill.clj"), 4096)
+	gitRun(t, sourceRepo, "-c", "user.email=test@example.com", "-c", "user.name=test", "add", ".")
+	gitRun(t, sourceRepo, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "init")
+	commit := strings.TrimSpace(gitOutputTest(t, sourceRepo, "rev-parse", "HEAD"))
+
+	candidates, err := collectCandidatesFromProfileSources([]profileSource{{
+		Language: "clojure",
+		RepoURL:  sourceRepo,
+		Commit:   commit,
+		Subdir:   "pkg",
+	}}, cacheRoot, []string{".clj"}, nil, defaultMaxBytes, false)
+	if err != nil {
+		t.Fatalf("collectCandidatesFromProfileSources: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatalf("expected curated source candidates, got none")
+	}
+	if got, want := filepath.ToSlash(candidates[0].RelPath), "pkg/examples/backfill.clj"; got != want {
+		t.Fatalf("RelPath = %q, want %q", got, want)
+	}
+}
+
 func TestRepoMetadataForRootReadsGitRemoteAndCommit(t *testing.T) {
 	repo := t.TempDir()
 	initGitRepo(t, repo, "https://example.com/real/repo.git")
@@ -521,6 +580,16 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
+}
+
+func gitOutputTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v failed: %v", args, err)
+	}
+	return string(out)
 }
 
 func TestSplitTreeSitterCorpusSourcesRejectsPlainFixtureText(t *testing.T) {

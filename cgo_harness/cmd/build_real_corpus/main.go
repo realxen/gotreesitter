@@ -33,9 +33,17 @@ type lockEntry struct {
 	Exts    []string
 }
 
+type profileSource struct {
+	Language string `json:"language"`
+	RepoURL  string `json:"repo_url"`
+	Commit   string `json:"commit"`
+	Subdir   string `json:"subdir,omitempty"`
+}
+
 type profileFile struct {
-	Name      string   `json:"name"`
-	Languages []string `json:"languages"`
+	Name      string          `json:"name"`
+	Languages []string        `json:"languages"`
+	Sources   []profileSource `json:"sources,omitempty"`
 }
 
 type corpusFile struct {
@@ -120,13 +128,14 @@ func main() {
 		fatalf("parse lock: %v", err)
 	}
 
-	resolvedProfilePath, languages, err := resolveLanguageList(profilePath, langsRaw)
+	resolvedProfilePath, profile, languages, err := resolveLanguageList(profilePath, langsRaw)
 	if err != nil {
 		fatalf("resolve languages: %v", err)
 	}
 	if len(languages) == 0 {
 		fatalf("no languages selected")
 	}
+	profileSources := groupProfileSources(profile.Sources)
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		fatalf("create out dir: %v", err)
@@ -189,6 +198,14 @@ func main() {
 			manifest.Missing = append(manifest.Missing, lang)
 			fmt.Fprintf(os.Stderr, "[warn] collect candidates failed for %q: %v\n", lang, err)
 			continue
+		}
+		if needsRepoCacheFallback(candidates, minMediumBytes, minLargeBytes) {
+			extra, err := collectCandidatesFromProfileSources(profileSources[lang], repoRoot, candidateExts, candidateNames, maxBytes, includeFixtures)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[warn] profile-source fallback failed for %q: %v\n", lang, err)
+			} else if len(extra) > 0 {
+				candidates = appendUniqueCorpusFiles(candidates, extra)
+			}
 		}
 		if needsRepoCacheFallback(candidates, minMediumBytes, minLargeBytes) {
 			extra, err := collectCandidatesFromRepoCache(repoCachePath, repoDir, candidateExts, candidateNames, maxBytes, includeFixtures)
@@ -327,30 +344,31 @@ func sameDir(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-func resolveLanguageList(profilePath, langsRaw string) (string, []string, error) {
+func resolveLanguageList(profilePath, langsRaw string) (string, profileFile, []string, error) {
 	if strings.TrimSpace(profilePath) != "" {
 		p, err := resolvePath(profilePath, []string{profilePath})
 		if err != nil {
-			return "", nil, err
+			return "", profileFile{}, nil, err
 		}
 		profile, err := loadProfile(p)
 		if err != nil {
-			return "", nil, err
+			return "", profileFile{}, nil, err
 		}
-		return p, dedupe(profile.Languages), nil
+		return p, profile, dedupe(profile.Languages), nil
 	}
 	value := strings.TrimSpace(langsRaw)
 	switch value {
 	case "", "top50", "top":
 		listPath, err := resolveTop50Path()
 		if err != nil {
-			return "", nil, err
+			return "", profileFile{}, nil, err
 		}
 		langs, err := loadTop50List(listPath)
 		if err != nil {
-			return "", nil, err
+			return "", profileFile{}, nil, err
 		}
-		return "", dedupe(langs), nil
+		profile := profileFile{Name: "top50", Languages: dedupe(langs)}
+		return "", profile, profile.Languages, nil
 	default:
 		parts := strings.Split(value, ",")
 		out := make([]string, 0, len(parts))
@@ -361,7 +379,8 @@ func resolveLanguageList(profilePath, langsRaw string) (string, []string, error)
 			}
 			out = append(out, name)
 		}
-		return "", dedupe(out), nil
+		profile := profileFile{Name: "inline", Languages: dedupe(out)}
+		return "", profile, profile.Languages, nil
 	}
 }
 
@@ -376,6 +395,17 @@ func loadProfile(path string) (profileFile, error) {
 	}
 	if len(profile.Languages) == 0 {
 		return profileFile{}, fmt.Errorf("profile %s has no languages", path)
+	}
+	for i, src := range profile.Sources {
+		if strings.TrimSpace(src.Language) == "" {
+			return profileFile{}, fmt.Errorf("profile %s source[%d] missing language", path, i)
+		}
+		if strings.TrimSpace(src.RepoURL) == "" {
+			return profileFile{}, fmt.Errorf("profile %s source[%d] missing repo_url", path, i)
+		}
+		if strings.TrimSpace(src.Commit) == "" {
+			return profileFile{}, fmt.Errorf("profile %s source[%d] missing commit", path, i)
+		}
 	}
 	return profile, nil
 }
@@ -543,6 +573,10 @@ func collectCandidates(repoDir string, exts []string, maxBytes int, includeFixtu
 }
 
 func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes int, includeFixtures bool) ([]corpusFile, error) {
+	return collectCandidatesWithNamesFromRoot(repoDir, repoDir, exts, names, maxBytes, includeFixtures)
+}
+
+func collectCandidatesWithNamesFromRoot(sourceRoot, walkRoot string, exts, names []string, maxBytes int, includeFixtures bool) ([]corpusFile, error) {
 	seen := map[string]struct{}{}
 	out := make([]corpusFile, 0, 256)
 	extSet := map[string]struct{}{}
@@ -576,7 +610,7 @@ func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes i
 				return
 			}
 		}
-		rel, err := filepath.Rel(repoDir, absPath)
+		rel, err := filepath.Rel(sourceRoot, absPath)
 		if err != nil {
 			return
 		}
@@ -605,7 +639,7 @@ func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes i
 			AbsPath:    absPath,
 			RelPath:    rel,
 			Size:       size,
-			SourceRoot: repoDir,
+			SourceRoot: sourceRoot,
 		})
 	}
 
@@ -630,7 +664,7 @@ func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes i
 		}, priorityDirs...)
 	}
 	for _, dir := range priorityDirs {
-		root := filepath.Join(repoDir, filepath.FromSlash(dir.path))
+		root := filepath.Join(walkRoot, filepath.FromSlash(dir.path))
 		if st, err := os.Stat(root); err != nil || !st.IsDir() {
 			continue
 		}
@@ -645,7 +679,7 @@ func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes i
 			return nil
 		})
 	}
-	_ = filepath.WalkDir(repoDir, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -672,7 +706,7 @@ func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes i
 				return nil
 			}
 		} else {
-			rel, err := filepath.Rel(repoDir, path)
+			rel, err := filepath.Rel(sourceRoot, path)
 			if err != nil {
 				return nil
 			}
@@ -690,6 +724,39 @@ func collectCandidatesWithNames(repoDir string, exts, names []string, maxBytes i
 		}
 		return out[i].RelPath < out[j].RelPath
 	})
+	return out, nil
+}
+
+func collectCandidatesFromProfileSources(sources []profileSource, checkoutRoot string, exts []string, names []string, maxBytes int, includeFixtures bool) ([]corpusFile, error) {
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	out := make([]corpusFile, 0, 64)
+	var failures []string
+	for _, src := range sources {
+		repoDir := filepath.Join(checkoutRoot, safeName(profileSourceCheckoutKey(src)))
+		if err := checkoutRepoAtCommit(src.RepoURL, src.Commit, repoDir); err != nil {
+			failures = append(failures, fmt.Sprintf("%s@%s: %v", src.RepoURL, shortCommit(src.Commit), err))
+			continue
+		}
+		walkRoot := repoDir
+		if strings.TrimSpace(src.Subdir) != "" {
+			walkRoot = filepath.Join(repoDir, filepath.FromSlash(src.Subdir))
+			if st, err := os.Stat(walkRoot); err != nil || !st.IsDir() {
+				failures = append(failures, fmt.Sprintf("%s@%s: missing subdir %q", src.RepoURL, shortCommit(src.Commit), src.Subdir))
+				continue
+			}
+		}
+		candidates, err := collectCandidatesWithNamesFromRoot(repoDir, walkRoot, exts, names, maxBytes, includeFixtures)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s@%s: %v", src.RepoURL, shortCommit(src.Commit), err))
+			continue
+		}
+		out = appendUniqueCorpusFiles(out, candidates)
+	}
+	if len(out) == 0 && len(failures) > 0 {
+		return nil, errors.New(strings.Join(failures, "; "))
+	}
 	return out, nil
 }
 
@@ -776,6 +843,21 @@ func appendUniqueCorpusFiles(dst, extra []corpusFile) []corpusFile {
 	return dst
 }
 
+func groupProfileSources(sources []profileSource) map[string][]profileSource {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make(map[string][]profileSource, len(sources))
+	for _, src := range sources {
+		lang := strings.TrimSpace(src.Language)
+		if lang == "" {
+			continue
+		}
+		out[lang] = append(out[lang], src)
+	}
+	return out
+}
+
 func corpusFileKey(cf corpusFile) string {
 	if strings.TrimSpace(cf.AbsPath) != "" {
 		return filepath.Clean(cf.AbsPath)
@@ -808,6 +890,14 @@ func isHexString(s string) bool {
 		}
 	}
 	return s != ""
+}
+
+func profileSourceCheckoutKey(src profileSource) string {
+	base := strings.TrimSuffix(filepath.Base(strings.TrimSpace(src.RepoURL)), ".git")
+	if base == "" {
+		base = "source"
+	}
+	return base + "-" + shortCommit(src.Commit)
 }
 
 func candidateMatchersForLanguage(lang string, exts []string) ([]string, []string) {
