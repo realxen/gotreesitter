@@ -279,6 +279,32 @@ func TestCollectCandidatesWithNamedFilesAllowsUndersizedCMakeHighlightSource(t *
 	}
 }
 
+func TestCollectCandidatesAllowsNarrowRBindingsSourcePaths(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteSizedText(t, filepath.Join(tmp, "bindings", "r", "R", "import-standalone-language.R"), 2250)
+	mustWriteSizedText(t, filepath.Join(tmp, "bindings", "r", "bootstrap.R"), 7221)
+	mustWriteSizedText(t, filepath.Join(tmp, "bindings", "node", "index.js"), 4096)
+
+	candidates, err := collectCandidates(tmp, []string{".r", ".R"}, defaultMaxBytes, false)
+	if err != nil {
+		t.Fatalf("collectCandidates: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		seen[filepath.ToSlash(c.RelPath)] = true
+	}
+	if !seen["bindings/r/R/import-standalone-language.R"] {
+		t.Fatalf("expected R binding source candidate missing: %#v", candidates)
+	}
+	if !seen["bindings/r/bootstrap.R"] {
+		t.Fatalf("expected R bootstrap source candidate missing: %#v", candidates)
+	}
+	if seen["bindings/node/index.js"] {
+		t.Fatalf("non-R bindings file should remain excluded: %#v", candidates)
+	}
+}
+
 func TestCandidateMatchersForLanguageInfersKnownExtensionsAndNames(t *testing.T) {
 	tests := []struct {
 		lang      string
@@ -357,6 +383,31 @@ func TestCollectCandidatesFromPlainRepoCacheDirectoryAddsCandidates(t *testing.T
 	}
 	if got, want := meta.Commit, "deadbeef"; got != want {
 		t.Fatalf("Commit = %q, want %q", got, want)
+	}
+}
+
+func TestCollectCandidatesFromRepoCacheSkipsPrimaryBasenameDuplicate(t *testing.T) {
+	primary := filepath.Join(t.TempDir(), "r-deadbeef")
+	cacheRoot := t.TempDir()
+	dup := filepath.Join(cacheRoot, "r-deadbeef")
+	other := filepath.Join(cacheRoot, "other-feed")
+	for _, dir := range []string{dup, other} {
+		if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+			t.Fatalf("mkdir repo: %v", err)
+		}
+	}
+	mustWriteSizedText(t, filepath.Join(dup, "src", "skip.R"), 4096)
+	mustWriteSizedText(t, filepath.Join(other, "src", "keep.R"), 4096)
+
+	candidates, err := collectCandidatesFromRepoCache(cacheRoot, primary, []string{".R", ".r"}, nil, defaultMaxBytes, false)
+	if err != nil {
+		t.Fatalf("collectCandidatesFromRepoCache: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d: %#v", len(candidates), candidates)
+	}
+	if got := filepath.ToSlash(candidates[0].RelPath); got != "src/keep.R" {
+		t.Fatalf("RelPath = %q, want %q", got, "src/keep.R")
 	}
 }
 

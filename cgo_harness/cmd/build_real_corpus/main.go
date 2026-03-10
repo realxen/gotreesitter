@@ -702,8 +702,9 @@ func collectCandidatesFromRepoCache(repoCachePath, primaryRepoDir string, exts [
 		return nil, err
 	}
 	out := make([]corpusFile, 0, 64)
+	primaryBase := filepath.Base(filepath.Clean(primaryRepoDir))
 	for _, root := range repoRoots {
-		if sameDir(root, primaryRepoDir) {
+		if sameDir(root, primaryRepoDir) || filepath.Base(filepath.Clean(root)) == primaryBase {
 			continue
 		}
 		candidates, err := collectCandidatesWithNames(root, exts, names, maxBytes, includeFixtures)
@@ -968,7 +969,9 @@ func looksCorpusCandidatePath(relPath string, includeFixtures bool, specialNames
 		strings.Contains(rel, "/vendor/") ||
 		strings.Contains(rel, "/dist/") ||
 		strings.Contains(rel, "/build/") {
-		return false
+		if !isAllowedSourceBindingPath(rel) {
+			return false
+		}
 	}
 	if !includeFixtures {
 		if strings.HasPrefix(rel, "test/") ||
@@ -997,6 +1000,14 @@ func isAllowedSourceTestPath(rel string) bool {
 		strings.Contains(rel, "/tests/highlight/") ||
 		strings.Contains(rel, "/test/tags/") ||
 		strings.Contains(rel, "/tests/tags/")
+}
+
+func isAllowedSourceBindingPath(rel string) bool {
+	rel = strings.ToLower(filepath.ToSlash(rel))
+	return strings.HasPrefix(rel, "bindings/r/r/") ||
+		strings.Contains(rel, "/bindings/r/r/") ||
+		rel == "bindings/r/bootstrap.r" ||
+		strings.HasSuffix(rel, "/bindings/r/bootstrap.r")
 }
 
 func looksGenericSourcePath(relPath string, includeFixtures bool) bool {
