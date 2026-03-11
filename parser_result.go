@@ -322,6 +322,7 @@ func normalizeKnownSpanAttribution(root *Node, source []byte, lang *Language) {
 	normalizeHaskellRootImportField(root, lang)
 	normalizeHaskellDeclarationsSpan(root, source, lang)
 	normalizeIniSectionStarts(root, lang)
+	normalizeJavaScriptTopLevelObjectLiterals(root, lang)
 	normalizeMakeConditionalConsequenceFields(root, lang)
 	normalizeNginxAttributeLineBreaks(root, source, lang)
 	normalizeTopLevelTrailingLineBreakSpan(root, source, lang)
@@ -1971,6 +1972,76 @@ func normalizeHaskellDeclarationsSpan(root *Node, source []byte, lang *Language)
 		}
 		extendNodeEndTo(child, root.endByte, source)
 	}
+}
+
+func normalizeJavaScriptTopLevelObjectLiterals(root *Node, lang *Language) {
+	if root == nil || lang == nil || lang.Name != "javascript" || root.Type(lang) != "program" {
+		return
+	}
+	exprSym, exprNamed, ok := javaScriptSymbolMeta(lang, "expression_statement")
+	if !ok {
+		return
+	}
+	objectSym, objectNamed, ok := javaScriptSymbolMeta(lang, "object")
+	if !ok {
+		return
+	}
+	pairSym, pairNamed, ok := javaScriptSymbolMeta(lang, "pair")
+	if !ok {
+		return
+	}
+	propSym, _, ok := javaScriptSymbolMeta(lang, "property_identifier")
+	if !ok {
+		return
+	}
+	for i, child := range root.children {
+		repl, ok := rewriteJavaScriptTopLevelObjectLiteral(child, lang, root.ownerArena, exprSym, exprNamed, objectSym, objectNamed, pairSym, pairNamed, propSym)
+		if ok {
+			root.children[i] = repl
+		}
+	}
+}
+
+func rewriteJavaScriptTopLevelObjectLiteral(node *Node, lang *Language, arena *nodeArena, exprSym Symbol, exprNamed bool, objectSym Symbol, objectNamed bool, pairSym Symbol, pairNamed bool, propSym Symbol) (*Node, bool) {
+	if node == nil || lang == nil || node.Type(lang) != "statement_block" || len(node.children) != 3 {
+		return nil, false
+	}
+	if node.children[0] == nil || node.children[0].Type(lang) != "{" || node.children[2] == nil || node.children[2].Type(lang) != "}" {
+		return nil, false
+	}
+	label := node.children[1]
+	if label == nil || label.Type(lang) != "labeled_statement" || len(label.children) != 3 {
+		return nil, false
+	}
+	key := label.children[0]
+	colon := label.children[1]
+	valueStmt := label.children[2]
+	if key == nil || key.Type(lang) != "statement_identifier" || colon == nil || colon.Type(lang) != ":" || valueStmt == nil || valueStmt.Type(lang) != "expression_statement" || len(valueStmt.children) != 1 || valueStmt.children[0] == nil {
+		return nil, false
+	}
+	pair := newParentNodeInArena(arena, pairSym, pairNamed, []*Node{
+		aliasedNodeInArena(arena, lang, key, propSym),
+		colon,
+		valueStmt.children[0],
+	}, nil, 0)
+	for fieldIdx, fieldName := range lang.FieldNames {
+		switch fieldName {
+		case "key":
+			ensureNodeFieldStorage(pair, len(pair.children))
+			pair.fieldIDs[0] = FieldID(fieldIdx)
+			pair.fieldSources[0] = fieldSourceDirect
+		case "value":
+			ensureNodeFieldStorage(pair, len(pair.children))
+			pair.fieldIDs[2] = FieldID(fieldIdx)
+			pair.fieldSources[2] = fieldSourceDirect
+		}
+	}
+	object := newParentNodeInArena(arena, objectSym, objectNamed, []*Node{
+		node.children[0],
+		pair,
+		node.children[2],
+	}, nil, 0)
+	return newParentNodeInArena(arena, exprSym, exprNamed, []*Node{object}, nil, 0), true
 }
 
 func normalizeSvelteTrailingExtraTrivia(root *Node, source []byte, lang *Language) {
@@ -5530,6 +5601,21 @@ func dropZeroWidthUnnamedTail(nodes []*Node, lang *Language) []*Node {
 		nodes = nodes[:len(nodes)-1]
 	}
 	return nodes
+}
+
+func javaScriptSymbolMeta(lang *Language, name string) (Symbol, bool, bool) {
+	if lang == nil {
+		return 0, false, false
+	}
+	sym, ok := symbolByName(lang, name)
+	if !ok {
+		return 0, false, false
+	}
+	named := false
+	if int(sym) < len(lang.SymbolMetadata) {
+		named = lang.SymbolMetadata[sym].Named
+	}
+	return sym, named, true
 }
 
 func symbolByName(lang *Language, name string) (Symbol, bool) {

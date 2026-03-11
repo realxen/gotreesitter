@@ -2009,6 +2009,59 @@ func TestNormalizeSvelteTrailingExtraTriviaDropsTrailingToken(t *testing.T) {
 	}
 }
 
+func TestNormalizeJavaScriptTopLevelObjectLiteralsRewritesObjectLiteral(t *testing.T) {
+	lang := &Language{
+		Name:        "javascript",
+		SymbolNames: []string{"EOF", "program", "statement_block", "{", "}", "labeled_statement", "statement_identifier", ":", "expression_statement", "arrow_function", "object", "pair", "property_identifier"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "program", Visible: true, Named: true},
+			{Name: "statement_block", Visible: true, Named: true},
+			{Name: "{", Visible: true, Named: false},
+			{Name: "}", Visible: true, Named: false},
+			{Name: "labeled_statement", Visible: true, Named: true},
+			{Name: "statement_identifier", Visible: true, Named: true},
+			{Name: ":", Visible: true, Named: false},
+			{Name: "expression_statement", Visible: true, Named: true},
+			{Name: "arrow_function", Visible: true, Named: true},
+			{Name: "object", Visible: true, Named: true},
+			{Name: "pair", Visible: true, Named: true},
+			{Name: "property_identifier", Visible: true, Named: true},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	open := newLeafNodeInArena(arena, 3, false, 0, 1, Point{}, Point{Column: 1})
+	key := newLeafNodeInArena(arena, 6, true, 2, 8, Point{Column: 2}, Point{Column: 8})
+	colon := newLeafNodeInArena(arena, 7, false, 8, 9, Point{Column: 8}, Point{Column: 9})
+	value := newLeafNodeInArena(arena, 9, true, 10, 16, Point{Column: 10}, Point{Column: 16})
+	valueStmt := newParentNodeInArena(arena, 8, true, []*Node{value}, nil, 0)
+	label := newParentNodeInArena(arena, 5, true, []*Node{key, colon, valueStmt}, nil, 0)
+	close := newLeafNodeInArena(arena, 4, false, 17, 18, Point{Column: 17}, Point{Column: 18})
+	block := newParentNodeInArena(arena, 2, true, []*Node{open, label, close}, nil, 0)
+	root := newParentNodeInArena(arena, 1, true, []*Node{block}, nil, 0)
+
+	normalizeJavaScriptTopLevelObjectLiterals(root, lang)
+
+	if got, want := root.children[0].Type(lang), "expression_statement"; got != want {
+		t.Fatalf("root.children[0].Type = %q, want %q", got, want)
+	}
+	object := root.children[0].children[0]
+	if got, want := object.Type(lang), "object"; got != want {
+		t.Fatalf("object.Type = %q, want %q", got, want)
+	}
+	pair := object.children[1]
+	if got, want := pair.Type(lang), "pair"; got != want {
+		t.Fatalf("pair.Type = %q, want %q", got, want)
+	}
+	if got, want := pair.children[0].Type(lang), "property_identifier"; got != want {
+		t.Fatalf("pair.children[0].Type = %q, want %q", got, want)
+	}
+	if got, want := pair.children[2].Type(lang), "arrow_function"; got != want {
+		t.Fatalf("pair.children[2].Type = %q, want %q", got, want)
+	}
+}
+
 func TestNormalizeDModuleDefinitionBoundsSnapToStructuralChildren(t *testing.T) {
 	lang := &Language{
 		Name:        "d",
