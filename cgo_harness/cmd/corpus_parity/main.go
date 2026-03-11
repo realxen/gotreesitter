@@ -78,8 +78,8 @@ func main() {
 	flag.StringVar(&langFlag, "lang", "top10", "language name, comma list, or top10")
 	flag.StringVar(&corpusFlag, "corpus", "", "corpus root directory")
 	flag.StringVar(&outFlag, "out", "parity_out/results.jsonl", "JSONL output path")
-	flag.StringVar(&artifactFlag, "artifact-dir", "parity_out/dump_v1", "directory for dump.v1 artifacts")
-	flag.StringVar(&scoreboardMD, "scoreboard", "PARITY.md", "scoreboard markdown output path")
+	flag.StringVar(&artifactFlag, "artifact-dir", "parity_out/dump_v1", "directory for dump.v1 artifacts; empty disables dump emission")
+	flag.StringVar(&scoreboardMD, "scoreboard", "PARITY.md", "scoreboard markdown output path; empty disables scoreboard emission")
 	flag.StringVar(&oracleFlag, "oracle", "c", "oracle runtime (only 'c' is supported)")
 	flag.Parse()
 
@@ -107,8 +107,10 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(outFlag), 0o755); err != nil {
 		fatalf("create out dir: %v", err)
 	}
-	if err := os.MkdirAll(artifactFlag, 0o755); err != nil {
-		fatalf("create artifact dir: %v", err)
+	if strings.TrimSpace(artifactFlag) != "" {
+		if err := os.MkdirAll(artifactFlag, 0o755); err != nil {
+			fatalf("create artifact dir: %v", err)
+		}
 	}
 
 	outFile, err := os.Create(outFlag)
@@ -139,9 +141,12 @@ func main() {
 			continue
 		}
 
-		langArtifacts := filepath.Join(artifactFlag, lang)
-		if err := os.MkdirAll(langArtifacts, 0o755); err != nil {
-			fatalf("create artifact lang dir %s: %v", langArtifacts, err)
+		langArtifacts := ""
+		if strings.TrimSpace(artifactFlag) != "" {
+			langArtifacts = filepath.Join(artifactFlag, lang)
+			if err := os.MkdirAll(langArtifacts, 0o755); err != nil {
+				fatalf("create artifact lang dir %s: %v", langArtifacts, err)
+			}
 		}
 
 		for _, abs := range files {
@@ -178,12 +183,16 @@ func main() {
 	if err := writer.Flush(); err != nil {
 		fatalf("flush %s: %v", outFlag, err)
 	}
-	if err := writeScoreboard(scoreboardMD, scores); err != nil {
-		fatalf("write scoreboard: %v", err)
+	if strings.TrimSpace(scoreboardMD) != "" {
+		if err := writeScoreboard(scoreboardMD, scores); err != nil {
+			fatalf("write scoreboard: %v", err)
+		}
 	}
 
 	fmt.Printf("wrote %d results to %s\n", seenFiles, outFlag)
-	fmt.Printf("updated scoreboard: %s\n", scoreboardMD)
+	if strings.TrimSpace(scoreboardMD) != "" {
+		fmt.Printf("updated scoreboard: %s\n", scoreboardMD)
+	}
 }
 
 func parseLangs(raw string) []string {
@@ -367,37 +376,39 @@ func runFileParity(runner *languageRunner, artifactDir, absPath, fileID string, 
 	}
 	defer cTree.Close()
 
-	goDump := cgoharness.DumpV1FromGo(goTree.RootNode(), goLang)
-	cDump := cgoharness.DumpV1FromC(cTree.RootNode())
-
-	safeID := safeArtifactID(fileID)
-	goDumpPath := filepath.Join(artifactDir, safeID+".go.dump.v1.json")
-	cDumpPath := filepath.Join(artifactDir, safeID+".c.dump.v1.json")
-
-	if err := writeJSON(goDumpPath, goDump); err != nil {
-		res.Pass = false
-		res.Category = "artifact"
-		res.Error = fmt.Sprintf("write %s: %v", goDumpPath, err)
-		return res
-	}
-	if err := writeJSON(cDumpPath, cDump); err != nil {
-		res.Pass = false
-		res.Category = "artifact"
-		res.Error = fmt.Sprintf("write %s: %v", cDumpPath, err)
-		return res
-	}
-	res.GoDumpPath = goDumpPath
-	res.CDumpPath = cDumpPath
-
 	diff := cgoharness.FirstDivergenceDumpV1(goTree.RootNode(), goLang, cTree.RootNode())
 	if diff != nil {
 		res.Pass = false
 		res.Category = diff.Category
 		res.FirstMismatch = diff
-		return res
 	}
 
-	res.Pass = true
+	if strings.TrimSpace(artifactDir) != "" {
+		goDump := cgoharness.DumpV1FromGo(goTree.RootNode(), goLang)
+		cDump := cgoharness.DumpV1FromC(cTree.RootNode())
+		safeID := safeArtifactID(fileID)
+		goDumpPath := filepath.Join(artifactDir, safeID+".go.dump.v1.json")
+		cDumpPath := filepath.Join(artifactDir, safeID+".c.dump.v1.json")
+
+		if err := writeJSON(goDumpPath, goDump); err != nil {
+			res.Pass = false
+			res.Category = "artifact"
+			res.Error = fmt.Sprintf("write %s: %v", goDumpPath, err)
+			return res
+		}
+		if err := writeJSON(cDumpPath, cDump); err != nil {
+			res.Pass = false
+			res.Category = "artifact"
+			res.Error = fmt.Sprintf("write %s: %v", cDumpPath, err)
+			return res
+		}
+		res.GoDumpPath = goDumpPath
+		res.CDumpPath = cDumpPath
+	}
+
+	if diff == nil {
+		res.Pass = true
+	}
 	return res
 }
 
