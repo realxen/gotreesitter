@@ -333,6 +333,11 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 	root.startPoint = Point{}
 }
 
+// maxTreeWalkDepth prevents stack overflow in recursive tree walkers when
+// parsing with grammargen-produced grammars that can create pathologically deep
+// hidden-node chains (e.g. Scala with >1M levels).
+const maxTreeWalkDepth = 5000
+
 // normalizeKnownSpanAttribution applies narrow compatibility fixes where
 // C tree-sitter attributes trailing trivia to a grouped node but this runtime
 // currently drops it during child normalization.
@@ -4021,9 +4026,9 @@ func normalizeFortranStatementLineBreaks(root *Node, source []byte, lang *Langua
 	if root == nil || lang == nil || lang.Name != "fortran" || len(source) == 0 {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "program" {
@@ -4042,19 +4047,19 @@ func normalizeFortranStatementLineBreaks(root *Node, source []byte, lang *Langua
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeNginxAttributeLineBreaks(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "nginx" || len(source) == 0 {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "attribute" {
@@ -4063,10 +4068,10 @@ func normalizeNginxAttributeLineBreaks(root *Node, source []byte, lang *Language
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeTopLevelTrailingLineBreakSpan(root *Node, source []byte, lang *Language) {
@@ -9869,17 +9874,17 @@ func normalizeScalaTrailingCommentOwnership(root *Node, source []byte, lang *Lan
 	if root == nil || len(source) == 0 || lang == nil || lang.Name != "scala" {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		normalizeScalaTrailingCommentSiblings(n, source, lang)
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeScalaTrailingCommentSiblings(parent *Node, source []byte, lang *Language) {
@@ -10009,9 +10014,9 @@ func normalizeScalaFunctionModifierFields(root *Node, lang *Language) {
 	if !ok {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "function_definition" {
@@ -10028,19 +10033,19 @@ func normalizeScalaFunctionModifierFields(root *Node, lang *Language) {
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeScalaInterpolatedStringTail(root *Node, source []byte, lang *Language) {
 	if root == nil || len(source) == 0 || lang == nil || lang.Name != "scala" {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "interpolated_string_expression" && len(n.children) >= 2 {
@@ -10068,7 +10073,7 @@ func normalizeScalaInterpolatedStringTail(root *Node, source []byte, lang *Langu
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 		if n.Type(lang) == "infix_expression" && len(n.children) > 0 {
 			last := n.children[len(n.children)-1]
@@ -10077,7 +10082,7 @@ func normalizeScalaInterpolatedStringTail(root *Node, source []byte, lang *Langu
 			}
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeScalaSingleLineInterpolatedStringTail(expr *Node, inner *Node, source []byte) {
