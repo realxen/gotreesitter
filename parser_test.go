@@ -1970,6 +1970,45 @@ func TestNormalizeHaskellDeclarationsSpanExtendsToTrailingTrivia(t *testing.T) {
 	}
 }
 
+func TestNormalizeSvelteTrailingExtraTriviaDropsTrailingToken(t *testing.T) {
+	lang := &Language{
+		Name:        "svelte",
+		SymbolNames: []string{"EOF", "document", "script_element", "style_element", "_tag_value_token1"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF", Visible: false, Named: false},
+			{Name: "document", Visible: true, Named: true},
+			{Name: "script_element", Visible: true, Named: true},
+			{Name: "style_element", Visible: true, Named: true},
+			{Name: "_tag_value_token1", Visible: false, Named: false},
+		},
+	}
+
+	arena := newNodeArena(arenaClassFull)
+	script := newLeafNodeInArena(arena, 2, true, 0, 8, Point{}, Point{Column: 8})
+	style := newLeafNodeInArena(arena, 3, true, 9, 17, Point{Row: 1}, Point{Row: 1, Column: 8})
+	trailing := newLeafNodeInArena(arena, 4, false, 17, 18, Point{Row: 1, Column: 8}, Point{Row: 2})
+	trailing.isExtra = true
+	root := newParentNodeInArena(arena, 1, true, []*Node{script, style, trailing}, []FieldID{0, 0, 0}, 0)
+	root.fieldSources = []uint8{fieldSourceNone, fieldSourceNone, fieldSourceNone}
+	root.endByte = 18
+	root.endPoint = Point{Row: 2}
+
+	normalizeSvelteTrailingExtraTrivia(root, []byte("<script>\n<style>\n\n"), lang)
+
+	if got, want := len(root.children), 2; got != want {
+		t.Fatalf("len(root.children) = %d, want %d", got, want)
+	}
+	if got, want := len(root.fieldIDs), 2; got != want {
+		t.Fatalf("len(root.fieldIDs) = %d, want %d", got, want)
+	}
+	if got, want := len(root.fieldSources), 2; got != want {
+		t.Fatalf("len(root.fieldSources) = %d, want %d", got, want)
+	}
+	if got := root.children[1].Type(lang); got != "style_element" {
+		t.Fatalf("child[1] = %q, want style_element", got)
+	}
+}
+
 func TestNormalizeDModuleDefinitionBoundsSnapToStructuralChildren(t *testing.T) {
 	lang := &Language{
 		Name:        "d",
