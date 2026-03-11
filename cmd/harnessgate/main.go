@@ -45,9 +45,14 @@ func main() {
 		goMaxProcs             int
 		realCorpusDir          string
 		realCorpusLangs        string
+		realCorpusManifest     string
 		realCorpusResultPath   string
 		realCorpusArtifactDir  string
 		realCorpusScoreboardMD string
+		realCorpusBoardJSON    string
+		realCorpusBoardMD      string
+		realCorpusL4Limit      int
+		realCorpusL4Languages  string
 		confidenceManifestPath string
 		confidenceProfile      string
 		confidenceResultsPath  string
@@ -72,9 +77,14 @@ func main() {
 	flag.IntVar(&goMaxProcs, "gomaxprocs", 1, "GOMAXPROCS used for benchmarks")
 	flag.StringVar(&realCorpusDir, "real-corpus-dir", "", "optional real corpus root; when set, run cgo_harness/cmd/corpus_parity")
 	flag.StringVar(&realCorpusLangs, "real-corpus-langs", "top10", "value passed to corpus_parity --lang")
+	flag.StringVar(&realCorpusManifest, "real-corpus-manifest", "", "optional manifest.json used to build an L3/L4 real corpus board after parity")
 	flag.StringVar(&realCorpusResultPath, "real-corpus-out", "", "optional explicit corpus JSONL output path")
 	flag.StringVar(&realCorpusArtifactDir, "real-corpus-artifacts", "", "optional explicit corpus artifact dir")
 	flag.StringVar(&realCorpusScoreboardMD, "real-corpus-scoreboard", "", "optional explicit corpus scoreboard markdown path")
+	flag.StringVar(&realCorpusBoardJSON, "real-corpus-board-json", "", "optional explicit real corpus board JSON output path")
+	flag.StringVar(&realCorpusBoardMD, "real-corpus-board-md", "", "optional explicit real corpus board markdown output path")
+	flag.IntVar(&realCorpusL4Limit, "real-corpus-l4-limit", 0, "if >0, treat L4 as the top N languages by max large-file bytes from the manifest")
+	flag.StringVar(&realCorpusL4Languages, "real-corpus-l4-languages", "", "optional comma-separated explicit L4 language subset for board generation")
 	flag.StringVar(&confidenceManifestPath, "confidence-manifest", "", "optional path to weighted confidence manifest JSON")
 	flag.StringVar(&confidenceProfile, "confidence-profile", "", "optional built-in confidence profile: top50|core90")
 	flag.StringVar(&confidenceResultsPath, "confidence-results", "", "optional JSONL path for confidence scoring; defaults to real-corpus output")
@@ -105,6 +115,12 @@ func main() {
 	}
 	if strings.TrimSpace(confidenceManifestPath) != "" && strings.TrimSpace(confidenceProfile) != "" {
 		fatalf("set only one of -confidence-manifest or -confidence-profile")
+	}
+	if realCorpusL4Limit < 0 {
+		fatalf("-real-corpus-l4-limit must be >= 0")
+	}
+	if realCorpusL4Limit > 0 && strings.TrimSpace(realCorpusL4Languages) != "" {
+		fatalf("set only one of -real-corpus-l4-limit or -real-corpus-l4-languages")
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		fatalf("create out dir: %v", err)
@@ -138,16 +154,16 @@ func main() {
 	if strings.TrimSpace(realCorpusDir) != "" {
 		outJSONL := realCorpusResultPath
 		if strings.TrimSpace(outJSONL) == "" {
-			outJSONL = filepath.Join("..", outDir, "03_real_corpus_results.jsonl")
+			outJSONL = harnessSubprocessOutputPath(outDir, "03_real_corpus_results.jsonl")
 		}
-		resolvedRealCorpusOut = outJSONL
+		resolvedRealCorpusOut = mustAbs(outJSONL)
 		artifactDir := realCorpusArtifactDir
 		if strings.TrimSpace(artifactDir) == "" {
-			artifactDir = filepath.Join("..", outDir, "03_real_corpus_dump_v1")
+			artifactDir = harnessSubprocessOutputPath(outDir, "03_real_corpus_dump_v1")
 		}
 		scoreboard := realCorpusScoreboardMD
 		if strings.TrimSpace(scoreboard) == "" {
-			scoreboard = filepath.Join("..", outDir, "03_real_corpus_PARITY.md")
+			scoreboard = harnessSubprocessOutputPath(outDir, "03_real_corpus_PARITY.md")
 		}
 		appendResult(runStep(step{
 			Name: "cgo-real-corpus-parity",
@@ -162,6 +178,47 @@ func main() {
 			},
 			LogPath: filepath.Join(outDir, "03_cgo_real_corpus.log"),
 		}))
+
+		manifestPath := strings.TrimSpace(realCorpusManifest)
+		if manifestPath == "" {
+			candidate := filepath.Join(realCorpusDir, "manifest.json")
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				manifestPath = candidate
+			}
+		}
+		if manifestPath != "" {
+			manifestPath = mustAbs(manifestPath)
+			boardJSON := realCorpusBoardJSON
+			if strings.TrimSpace(boardJSON) == "" {
+				boardJSON = filepath.Join(outDir, "03_real_corpus_board.json")
+			}
+			boardJSON = mustAbs(boardJSON)
+			boardMD := realCorpusBoardMD
+			if strings.TrimSpace(boardMD) == "" {
+				boardMD = filepath.Join(outDir, "03_real_corpus_board.md")
+			}
+			boardMD = mustAbs(boardMD)
+			outJSONL = mustAbs(outJSONL)
+			cmd := []string{
+				"go", "run", "./cmd/real_corpus_board",
+				"--manifest", manifestPath,
+				"--results", outJSONL,
+				"--out-json", boardJSON,
+				"--out-md", boardMD,
+			}
+			if realCorpusL4Limit > 0 {
+				cmd = append(cmd, "--l4-limit", fmt.Sprintf("%d", realCorpusL4Limit))
+			}
+			if strings.TrimSpace(realCorpusL4Languages) != "" {
+				cmd = append(cmd, "--l4-languages", realCorpusL4Languages)
+			}
+			appendResult(runStep(step{
+				Name:    "real-corpus-board",
+				Dir:     "cgo_harness",
+				Command: cmd,
+				LogPath: filepath.Join(outDir, "03b_real_corpus_board.log"),
+			}))
+		}
 	}
 
 	if strings.TrimSpace(confidenceManifestPath) != "" || strings.TrimSpace(confidenceProfile) != "" {
@@ -298,4 +355,19 @@ func writeSummary(path string, results []stepResult) error {
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "harnessgate: "+format+"\n", args...)
 	os.Exit(2)
+}
+
+func mustAbs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		fatalf("resolve absolute path for %q: %v", path, err)
+	}
+	return abs
+}
+
+func harnessSubprocessOutputPath(outDir, name string) string {
+	if filepath.IsAbs(outDir) {
+		return filepath.Join(outDir, name)
+	}
+	return filepath.Join("..", outDir, name)
 }

@@ -27,13 +27,13 @@ type corpusManifestEntry struct {
 }
 
 type parityResult struct {
-	Language     string          `json:"language"`
-	FileID       string          `json:"file_id"`
-	FilePath     string          `json:"file_path"`
-	SourceSHA256 string          `json:"source_sha256"`
-	Pass         bool            `json:"pass"`
-	Category     string          `json:"category,omitempty"`
-	Error        string          `json:"error,omitempty"`
+	Language     string           `json:"language"`
+	FileID       string           `json:"file_id"`
+	FilePath     string           `json:"file_path"`
+	SourceSHA256 string           `json:"source_sha256"`
+	Pass         bool             `json:"pass"`
+	Category     string           `json:"category,omitempty"`
+	Error        string           `json:"error,omitempty"`
 	FirstDiv     *firstDivergence `json:"first_divergence,omitempty"`
 }
 
@@ -45,12 +45,15 @@ type firstDivergence struct {
 }
 
 type board struct {
-	GeneratedAt  string          `json:"generated_at"`
-	ManifestPath string          `json:"manifest_path"`
-	ResultsPath  string          `json:"results_path"`
-	L3           boardAggregate  `json:"l3"`
-	L4           boardAggregate  `json:"l4"`
-	Languages    []languageBoard `json:"languages"`
+	GeneratedAt         string          `json:"generated_at"`
+	ManifestPath        string          `json:"manifest_path"`
+	ResultsPath         string          `json:"results_path"`
+	L3Scope             string          `json:"l3_scope"`
+	L4Scope             string          `json:"l4_scope"`
+	L4SelectedLanguages []string        `json:"l4_selected_languages,omitempty"`
+	L3                  boardAggregate  `json:"l3"`
+	L4                  boardAggregate  `json:"l4"`
+	Languages           []languageBoard `json:"languages"`
 }
 
 type boardAggregate struct {
@@ -70,11 +73,11 @@ type languageBoard struct {
 }
 
 type levelSummary struct {
-	Status        string        `json:"status"`
-	TotalFiles    int           `json:"total_files"`
-	PassingFiles  int           `json:"passing_files"`
-	FailingFiles  []fileFailure `json:"failing_files,omitempty"`
-	MissingFiles  []string      `json:"missing_files,omitempty"`
+	Status       string        `json:"status"`
+	TotalFiles   int           `json:"total_files"`
+	PassingFiles int           `json:"passing_files"`
+	FailingFiles []fileFailure `json:"failing_files,omitempty"`
+	MissingFiles []string      `json:"missing_files,omitempty"`
 }
 
 type fileFailure struct {
@@ -84,18 +87,27 @@ type fileFailure struct {
 	FirstDivergence string `json:"first_divergence,omitempty"`
 }
 
+type boardOptions struct {
+	L4Limit     int
+	L4Languages []string
+}
+
 func main() {
 	var (
 		manifestPath string
 		resultsPath  string
 		outJSON      string
 		outMD        string
+		l4Limit      int
+		l4Languages  string
 	)
 
 	flag.StringVar(&manifestPath, "manifest", "", "path to build_real_corpus manifest.json")
 	flag.StringVar(&resultsPath, "results", "", "path to corpus_parity results.jsonl")
 	flag.StringVar(&outJSON, "out-json", "real_corpus_board.json", "JSON output path")
 	flag.StringVar(&outMD, "out-md", "REAL_CORPUS_BOARD.md", "Markdown output path")
+	flag.IntVar(&l4Limit, "l4-limit", 0, "if >0, limit L4 to the top N languages by max large-file bytes")
+	flag.StringVar(&l4Languages, "l4-languages", "", "optional comma-separated explicit L4 language subset")
 	flag.Parse()
 
 	if strings.TrimSpace(manifestPath) == "" {
@@ -103,6 +115,12 @@ func main() {
 	}
 	if strings.TrimSpace(resultsPath) == "" {
 		fatalf("--results is required")
+	}
+	if l4Limit < 0 {
+		fatalf("--l4-limit must be >= 0")
+	}
+	if l4Limit > 0 && strings.TrimSpace(l4Languages) != "" {
+		fatalf("set only one of --l4-limit or --l4-languages")
 	}
 
 	manifest, err := loadManifest(manifestPath)
@@ -114,7 +132,10 @@ func main() {
 		fatalf("load results: %v", err)
 	}
 
-	b := buildBoard(manifestPath, resultsPath, manifest, results)
+	b := buildBoard(manifestPath, resultsPath, manifest, results, boardOptions{
+		L4Limit:     l4Limit,
+		L4Languages: parseCSVList(l4Languages),
+	})
 	if err := writeJSON(outJSON, b); err != nil {
 		fatalf("write %s: %v", outJSON, err)
 	}
@@ -168,7 +189,7 @@ func loadResults(path string) ([]parityResult, error) {
 	return results, nil
 }
 
-func buildBoard(manifestPath, resultsPath string, manifest *corpusManifest, results []parityResult) board {
+func buildBoard(manifestPath, resultsPath string, manifest *corpusManifest, results []parityResult, opts boardOptions) board {
 	resultByLangAndFile := make(map[string]parityResult, len(results))
 	for _, r := range results {
 		resultByLangAndFile[resultKey(r.Language, r.FileID)] = r
@@ -177,19 +198,32 @@ func buildBoard(manifestPath, resultsPath string, manifest *corpusManifest, resu
 	langs := append([]string(nil), manifest.Languages...)
 	sort.Strings(langs)
 
+	l4Selected, l4Scope := selectL4Languages(manifest.Entries, opts)
+	l4SelectedList := make([]string, 0, len(l4Selected))
+	for name := range l4Selected {
+		l4SelectedList = append(l4SelectedList, name)
+	}
+	sort.Strings(l4SelectedList)
+
 	out := board{
-		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
-		ManifestPath: manifestPath,
-		ResultsPath:  resultsPath,
-		L3:           boardAggregate{Name: "L3"},
-		L4:           boardAggregate{Name: "L4"},
-		Languages:    make([]languageBoard, 0, len(langs)),
+		GeneratedAt:         time.Now().UTC().Format(time.RFC3339),
+		ManifestPath:        manifestPath,
+		ResultsPath:         resultsPath,
+		L3Scope:             "all medium entries present in manifest",
+		L4Scope:             l4Scope,
+		L4SelectedLanguages: l4SelectedList,
+		L3:                  boardAggregate{Name: "L3"},
+		L4:                  boardAggregate{Name: "L4"},
+		Languages:           make([]languageBoard, 0, len(langs)),
 	}
 
 	for _, lang := range langs {
 		lb := languageBoard{Language: lang}
 		mediumEntries := manifestEntriesFor(manifest.Entries, lang, "medium")
-		largeEntries := manifestEntriesFor(manifest.Entries, lang, "large")
+		largeEntries := []corpusManifestEntry(nil)
+		if len(l4Selected) == 0 || containsStringKey(l4Selected, lang) {
+			largeEntries = manifestEntriesFor(manifest.Entries, lang, "large")
+		}
 		lb.L3 = summarizeLevel(mediumEntries, lang, resultByLangAndFile)
 		lb.L4 = summarizeLevel(largeEntries, lang, resultByLangAndFile)
 		out.Languages = append(out.Languages, lb)
@@ -200,6 +234,79 @@ func buildBoard(manifestPath, resultsPath string, manifest *corpusManifest, resu
 	finalizeAggregate(&out.L3)
 	finalizeAggregate(&out.L4)
 	return out
+}
+
+func parseCSVList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 16)
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+type l4LangRank struct {
+	Language string
+	MaxBytes int64
+}
+
+func selectL4Languages(entries []corpusManifestEntry, opts boardOptions) (map[string]struct{}, string) {
+	if len(opts.L4Languages) > 0 {
+		out := make(map[string]struct{}, len(opts.L4Languages))
+		for _, name := range opts.L4Languages {
+			out[name] = struct{}{}
+		}
+		return out, fmt.Sprintf("explicit L4 language subset (%d): %s", len(opts.L4Languages), strings.Join(opts.L4Languages, ", "))
+	}
+	if opts.L4Limit <= 0 {
+		return nil, "all large entries present in manifest"
+	}
+	maxByLang := map[string]int64{}
+	for _, entry := range entries {
+		if entry.Bucket != "large" {
+			continue
+		}
+		if entry.Bytes > maxByLang[entry.Language] {
+			maxByLang[entry.Language] = entry.Bytes
+		}
+	}
+	ranks := make([]l4LangRank, 0, len(maxByLang))
+	for lang, maxBytes := range maxByLang {
+		ranks = append(ranks, l4LangRank{Language: lang, MaxBytes: maxBytes})
+	}
+	sort.Slice(ranks, func(i, j int) bool {
+		if ranks[i].MaxBytes != ranks[j].MaxBytes {
+			return ranks[i].MaxBytes > ranks[j].MaxBytes
+		}
+		return ranks[i].Language < ranks[j].Language
+	})
+	if opts.L4Limit > len(ranks) {
+		opts.L4Limit = len(ranks)
+	}
+	out := make(map[string]struct{}, opts.L4Limit)
+	names := make([]string, 0, opts.L4Limit)
+	for _, rank := range ranks[:opts.L4Limit] {
+		out[rank.Language] = struct{}{}
+		names = append(names, rank.Language)
+	}
+	return out, fmt.Sprintf("top %d languages by max large-file bytes: %s", len(names), strings.Join(names, ", "))
+}
+
+func containsStringKey(m map[string]struct{}, key string) bool {
+	_, ok := m[key]
+	return ok
 }
 
 func manifestEntriesFor(entries []corpusManifestEntry, lang, bucket string) []corpusManifestEntry {
@@ -300,7 +407,9 @@ func writeMarkdown(path string, b board) error {
 	md.WriteString("# Real Corpus Board\n\n")
 	md.WriteString(fmt.Sprintf("_Generated: %s_\n\n", b.GeneratedAt))
 	md.WriteString(fmt.Sprintf("- Manifest: `%s`\n", b.ManifestPath))
-	md.WriteString(fmt.Sprintf("- Results: `%s`\n\n", b.ResultsPath))
+	md.WriteString(fmt.Sprintf("- Results: `%s`\n", b.ResultsPath))
+	md.WriteString(fmt.Sprintf("- L3 Scope: %s\n", b.L3Scope))
+	md.WriteString(fmt.Sprintf("- L4 Scope: %s\n\n", b.L4Scope))
 
 	md.WriteString("## Summary\n\n")
 	md.WriteString("| Level | Green Languages | Applicable Languages | Passing Files | Total Files | Language Progress | File Progress |\n")

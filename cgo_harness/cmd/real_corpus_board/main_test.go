@@ -19,7 +19,7 @@ func TestBuildBoardAggregatesL3AndL4(t *testing.T) {
 		{Language: "yaml", FileID: "large__a.yaml", SourceSHA256: "l2", Pass: true},
 	}
 
-	board := buildBoard("manifest.json", "results.jsonl", manifest, results)
+	board := buildBoard("manifest.json", "results.jsonl", manifest, results, boardOptions{})
 
 	if got, want := board.L3.ApplicableLangs, 2; got != want {
 		t.Fatalf("L3.ApplicableLangs = %d, want %d", got, want)
@@ -72,5 +72,76 @@ func TestSummarizeLevelFlagsMissingFiles(t *testing.T) {
 	}
 	if len(summary.MissingFiles) != 1 || summary.MissingFiles[0] != "medium__a.go" {
 		t.Fatalf("missing files = %#v, want medium__a.go", summary.MissingFiles)
+	}
+}
+
+func TestBuildBoardL4LimitSelectsLargestLanguages(t *testing.T) {
+	manifest := &corpusManifest{
+		Languages: []string{"go", "rust", "yaml", "swift"},
+		Entries: []corpusManifestEntry{
+			{Language: "go", Bucket: "large", Bytes: 900, SHA256: "g1", OutputPath: "/tmp/go/large__a.go"},
+			{Language: "rust", Bucket: "large", Bytes: 400, SHA256: "r1", OutputPath: "/tmp/rust/large__a.rs"},
+			{Language: "yaml", Bucket: "large", Bytes: 700, SHA256: "y1", OutputPath: "/tmp/yaml/large__a.yaml"},
+			{Language: "swift", Bucket: "medium", Bytes: 600, SHA256: "s1", OutputPath: "/tmp/swift/medium__a.swift"},
+		},
+	}
+	results := []parityResult{
+		{Language: "go", FileID: "large__a.go", SourceSHA256: "g1", Pass: true},
+		{Language: "rust", FileID: "large__a.rs", SourceSHA256: "r1", Pass: true},
+		{Language: "yaml", FileID: "large__a.yaml", SourceSHA256: "y1", Pass: true},
+		{Language: "swift", FileID: "medium__a.swift", SourceSHA256: "s1", Pass: true},
+	}
+
+	board := buildBoard("manifest.json", "results.jsonl", manifest, results, boardOptions{L4Limit: 2})
+
+	if got, want := board.L4.ApplicableLangs, 2; got != want {
+		t.Fatalf("L4.ApplicableLangs = %d, want %d", got, want)
+	}
+	if got, want := board.L4SelectedLanguages, []string{"go", "yaml"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("L4SelectedLanguages = %#v, want %#v", got, want)
+	}
+	for _, lang := range board.Languages {
+		switch lang.Language {
+		case "go", "yaml":
+			if lang.L4.Status != "green" {
+				t.Fatalf("%s L4 status = %q, want green", lang.Language, lang.L4.Status)
+			}
+		case "rust":
+			if lang.L4.Status != "na" {
+				t.Fatalf("rust L4 status = %q, want na", lang.L4.Status)
+			}
+		}
+	}
+}
+
+func TestBuildBoardL4ExplicitLanguages(t *testing.T) {
+	manifest := &corpusManifest{
+		Languages: []string{"go", "rust"},
+		Entries: []corpusManifestEntry{
+			{Language: "go", Bucket: "large", Bytes: 100, SHA256: "g1", OutputPath: "/tmp/go/large__a.go"},
+			{Language: "rust", Bucket: "large", Bytes: 100, SHA256: "r1", OutputPath: "/tmp/rust/large__a.rs"},
+		},
+	}
+	results := []parityResult{
+		{Language: "go", FileID: "large__a.go", SourceSHA256: "g1", Pass: true},
+		{Language: "rust", FileID: "large__a.rs", SourceSHA256: "r1", Pass: false, Category: "shape"},
+	}
+
+	board := buildBoard("manifest.json", "results.jsonl", manifest, results, boardOptions{L4Languages: []string{"rust"}})
+
+	if got, want := board.L4.ApplicableLangs, 1; got != want {
+		t.Fatalf("L4.ApplicableLangs = %d, want %d", got, want)
+	}
+	for _, lang := range board.Languages {
+		switch lang.Language {
+		case "go":
+			if lang.L4.Status != "na" {
+				t.Fatalf("go L4 status = %q, want na", lang.L4.Status)
+			}
+		case "rust":
+			if lang.L4.Status != "red" {
+				t.Fatalf("rust L4 status = %q, want red", lang.L4.Status)
+			}
+		}
 	}
 }

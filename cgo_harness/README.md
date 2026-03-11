@@ -247,6 +247,25 @@ go run ./cmd/harnessgate -mode correctness \
   -real-corpus-langs top50
 ```
 
+- Produce an explicit L3/L4 board from the manifest + parity results:
+
+```sh
+go run ./cmd/real_corpus_board \
+  --manifest cgo_harness/corpus_real/manifest.json \
+  --results harness_out/03_real_corpus_results.jsonl \
+  --out-json harness_out/03_real_corpus_board.json \
+  --out-md harness_out/03_real_corpus_board.md \
+  --l4-limit 20
+```
+
+Notes:
+
+- `L3` is all `medium` entries present in the built manifest.
+- `L4` is all `large` entries by default, or the top `N` heavy-duty languages by
+  max large-file bytes when `--l4-limit` is set.
+- `cmd/harnessgate` can generate the same board directly when passed
+  `-real-corpus-manifest` and optional `-real-corpus-l4-limit`.
+
 ## Run C Baseline Benchmarks
 
 ```sh
