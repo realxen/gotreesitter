@@ -26,6 +26,7 @@ type gssScratch struct {
 	slabCursor     int
 	initialCap     int
 	skipClear      bool
+	usedTotal      int
 	allocatedBytes int64
 }
 
@@ -218,6 +219,7 @@ func (s *gssScratch) allocNode(entry stackEntry, prev *gssNode, depth int) *gssN
 		}
 		idx := slab.used
 		slab.used++
+		s.usedTotal++
 		s.slabCursor = i
 		n := &slab.data[idx]
 		n.entry = entry
@@ -260,6 +262,7 @@ func (s *gssScratch) reset() {
 		}
 		s.slabCursor = 0
 		s.skipClear = false
+		s.usedTotal = 0
 		s.recomputeAllocatedBytes()
 		return
 	}
@@ -270,6 +273,7 @@ func (s *gssScratch) reset() {
 	}
 	s.slabCursor = 0
 	s.skipClear = false
+	s.usedTotal = 0
 	s.recomputeAllocatedBytes()
 }
 

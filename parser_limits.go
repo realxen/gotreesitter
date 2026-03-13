@@ -89,6 +89,17 @@ func (p *Parser) incrementalArenaHintCapacity() int {
 	return int(atomic.LoadUint32(&p.incrementalArenaHint))
 }
 
+func (p *Parser) incrementalGSSHintCapacity() int {
+	if p == nil {
+		return defaultGSSNodeSlabCap
+	}
+	hint := int(atomic.LoadUint32(&p.incrementalGSSHint))
+	if hint < defaultGSSNodeSlabCap {
+		return defaultGSSNodeSlabCap
+	}
+	return hint
+}
+
 func (p *Parser) recordFullArenaUsage(used int) {
 	if p == nil || used <= 0 {
 		return
@@ -148,6 +159,37 @@ func (p *Parser) recordIncrementalArenaUsage(used int) {
 			next = uint32(blended)
 		}
 		if old == next || atomic.CompareAndSwapUint32(&p.incrementalArenaHint, old, next) {
+			return
+		}
+	}
+}
+
+func (p *Parser) recordIncrementalGSSUsage(used int) {
+	if p == nil || used <= 0 {
+		return
+	}
+	target := used + used/8 // keep 12.5% headroom above observed peak.
+	if target < defaultGSSNodeSlabCap {
+		target = defaultGSSNodeSlabCap
+	}
+	const maxHintNodes = 512 * 1024
+	if target > maxHintNodes {
+		target = maxHintNodes
+	}
+
+	for {
+		old := atomic.LoadUint32(&p.incrementalGSSHint)
+		var next uint32
+		if old == 0 {
+			next = uint32(target)
+		} else {
+			blended := (int(old)*3 + target) / 4
+			if blended < defaultGSSNodeSlabCap {
+				blended = defaultGSSNodeSlabCap
+			}
+			next = uint32(blended)
+		}
+		if old == next || atomic.CompareAndSwapUint32(&p.incrementalGSSHint, old, next) {
 			return
 		}
 	}
