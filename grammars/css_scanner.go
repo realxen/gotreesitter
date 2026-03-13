@@ -37,6 +37,7 @@ func (CssExternalScanner) Create() any                           { return nil }
 func (CssExternalScanner) Destroy(payload any)                   {}
 func (CssExternalScanner) Serialize(payload any, buf []byte) int { return 0 }
 func (CssExternalScanner) Deserialize(payload any, buf []byte)   {}
+func (CssExternalScanner) SupportsIncrementalReuse() bool        { return true }
 
 func (CssExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 	// Error recovery sentinel — always decline.

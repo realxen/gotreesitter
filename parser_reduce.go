@@ -12,6 +12,33 @@ type reduceChainSignature struct {
 
 const maxRepeatedReduceChainSignature = 32
 
+func buildReduceAliasSequences(lang *Language) [][]Symbol {
+	if lang == nil || len(lang.AliasSequences) == 0 {
+		return nil
+	}
+	out := make([][]Symbol, len(lang.AliasSequences))
+	for i, seq := range lang.AliasSequences {
+		for j := range seq {
+			if seq[j] != 0 {
+				out[i] = seq
+				break
+			}
+		}
+	}
+	return out
+}
+
+func buildReduceFieldPresence(lang *Language) []bool {
+	if lang == nil || len(lang.FieldMapSlices) == 0 {
+		return nil
+	}
+	out := make([]bool, len(lang.FieldMapSlices))
+	for i, fm := range lang.FieldMapSlices {
+		out[i] = fm[1] != 0
+	}
+	return out
+}
+
 func (p *Parser) applyActionWithReduceChain(s *glrStack, act ParseAction, tok Token, anyReduced *bool, nodeCount *int, arena *nodeArena, entryScratch *glrEntryScratch, gssScratch *gssScratch, tmpEntries *[]stackEntry, deferParentLinks bool, trackChildErrors *bool) bool {
 	p.applyAction(s, act, tok, anyReduced, nodeCount, arena, entryScratch, gssScratch, tmpEntries, deferParentLinks, trackChildErrors)
 	if act.Type != ParseActionReduce || tok.NoLookahead || s == nil || s.dead || s.accepted || s.shifted {
@@ -338,11 +365,10 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 	named := p.isNamedSymbol(act.Symbol)
 	var parent *Node
 	if deferParentLinks {
-		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID, trackChildErrors)
+		parent = newParentNodeInArenaNoLinksWithFieldSources(arena, act.Symbol, named, children, fieldIDs, fieldSources, act.ProductionID, trackChildErrors)
 	} else {
-		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+		parent = newParentNodeInArenaWithFieldSources(arena, act.Symbol, named, children, fieldIDs, fieldSources, act.ProductionID)
 	}
-	parent.fieldSources = fieldSources
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && reducedEnd > 0 {
 		span := computeReduceRawSpan(windowEntries, 0, reducedEnd)
@@ -1364,11 +1390,10 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 	named := p.isNamedSymbol(act.Symbol)
 	var parent *Node
 	if deferParentLinks {
-		parent = newParentNodeInArenaNoLinks(arena, act.Symbol, named, children, fieldIDs, act.ProductionID, trackChildErrors)
+		parent = newParentNodeInArenaNoLinksWithFieldSources(arena, act.Symbol, named, children, fieldIDs, fieldSources, act.ProductionID, trackChildErrors)
 	} else {
-		parent = newParentNodeInArena(arena, act.Symbol, named, children, fieldIDs, act.ProductionID)
+		parent = newParentNodeInArenaWithFieldSources(arena, act.Symbol, named, children, fieldIDs, fieldSources, act.ProductionID)
 	}
-	parent.fieldSources = fieldSources
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && window.reducedEnd > window.start {
 		span := computeReduceRawSpan(entries, window.start, window.reducedEnd)
@@ -1655,6 +1680,25 @@ func hiddenTreeHasFieldIDs(n *Node) bool {
 	return false
 }
 
+func (p *Parser) fieldFlagScratch(childCount int) ([]bool, []bool) {
+	if p == nil || childCount <= 0 {
+		return nil, nil
+	}
+	if cap(p.fieldInheritedScratch) < childCount {
+		p.fieldInheritedScratch = make([]bool, childCount)
+	} else {
+		p.fieldInheritedScratch = p.fieldInheritedScratch[:childCount]
+		clear(p.fieldInheritedScratch)
+	}
+	if cap(p.fieldConflictedScratch) < childCount {
+		p.fieldConflictedScratch = make([]bool, childCount)
+	} else {
+		p.fieldConflictedScratch = p.fieldConflictedScratch[:childCount]
+		clear(p.fieldConflictedScratch)
+	}
+	return p.fieldInheritedScratch, p.fieldConflictedScratch
+}
+
 // buildFieldIDs creates the field ID slice for a reduce action.
 func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeArena) ([]FieldID, []bool) {
 	if childCount <= 0 || len(p.language.FieldMapEntries) == 0 {
@@ -1676,17 +1720,7 @@ func (p *Parser) buildFieldIDs(childCount int, productionID uint16, arena *nodeA
 	}
 
 	var fieldIDs []FieldID
-	var inherited []bool
-	var conflictedInherited []bool
-	var inheritedSmall [16]bool
-	var conflictedSmall [16]bool
-	if childCount <= len(inheritedSmall) {
-		inherited = inheritedSmall[:childCount]
-		conflictedInherited = conflictedSmall[:childCount]
-	} else {
-		inherited = make([]bool, childCount)
-		conflictedInherited = make([]bool, childCount)
-	}
+	inherited, conflictedInherited := p.fieldFlagScratch(childCount)
 	start := int(fm[0])
 	assigned := false
 	for i := 0; i < count; i++ {

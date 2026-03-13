@@ -22,6 +22,14 @@ type reuseCursor struct {
 	cachedStart      uint32
 	cachedStartValid bool
 	cached           []*Node
+
+	rejectDirty                   uint64
+	rejectAncestorDirtyBeforeEdit uint64
+	rejectHasError                uint64
+	rejectInvalidSpan             uint64
+	rejectOutOfBounds             uint64
+	rejectRootNonLeafChanged      uint64
+	rejectLargeNonLeaf            uint64
 }
 
 // reuseScratch holds reusable buffers for incremental reuse traversal.
@@ -56,6 +64,13 @@ func (c *reuseCursor) reset(oldTree *Tree, source []byte, scratch *reuseScratch)
 	c.cachedStart = 0
 	c.cachedStartValid = false
 	c.cached = scratch.cache[:0]
+	c.rejectDirty = 0
+	c.rejectAncestorDirtyBeforeEdit = 0
+	c.rejectHasError = 0
+	c.rejectInvalidSpan = 0
+	c.rejectOutOfBounds = 0
+	c.rejectRootNonLeafChanged = 0
+	c.rejectLargeNonLeaf = 0
 
 	c.stack = append(c.stack, reuseFrame{node: oldTree.RootNode()})
 	return c
@@ -163,12 +178,23 @@ func (c *reuseCursor) advance() *Node {
 		}
 
 		if frame.underDirty && c.hasEdits && cur.endByte <= c.minEditAt {
+			c.rejectAncestorDirtyBeforeEdit++
 			continue
 		}
-		if cur.hasError || cur.endByte <= cur.startByte || cur.endByte > c.sourceLen {
+		if cur.hasError {
+			c.rejectHasError++
+			continue
+		}
+		if cur.endByte <= cur.startByte {
+			c.rejectInvalidSpan++
+			continue
+		}
+		if cur.endByte > c.sourceLen {
+			c.rejectOutOfBounds++
 			continue
 		}
 		if dirtyHere {
+			c.rejectDirty++
 			continue
 		}
 		return cur
@@ -205,6 +231,7 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 			if !(n.startByte == 0 &&
 				n.endByte == idx.sourceLen &&
 				nodeBytesEqual(n.startByte, n.endByte, idx.oldSource, idx.newSource)) {
+				idx.rejectRootNonLeafChanged++
 				continue
 			}
 		}
@@ -225,6 +252,9 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 		}
 		span := n.EndByte() - n.StartByte()
 		if span == 0 || span > maxNonLeafReuseSpan {
+			if span > maxNonLeafReuseSpan {
+				idx.rejectLargeNonLeaf++
+			}
 			continue
 		}
 		nextState, truncateDepth, ok := p.reuseNonLeafTargetStateOnStack(s, n, lookahead.StartByte, entryScratch)

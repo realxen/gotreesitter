@@ -28,6 +28,7 @@ func (ScssExternalScanner) Create() any                           { return nil }
 func (ScssExternalScanner) Destroy(payload any)                   {}
 func (ScssExternalScanner) Serialize(payload any, buf []byte) int { return 0 }
 func (ScssExternalScanner) Deserialize(payload any, buf []byte)   {}
+func (ScssExternalScanner) SupportsIncrementalReuse() bool        { return true }
 
 func (ScssExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 	lang := ScssLanguage()

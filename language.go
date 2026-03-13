@@ -59,15 +59,15 @@ type ParseActionEntry struct {
 type LexState struct {
 	AcceptToken Symbol // 0 if this state doesn't accept
 	Skip        bool   // true if accepted chars are whitespace
+	Default     int32  // default next state (-1 if none)
+	EOF         int32  // state on EOF (-1 if none)
 	Transitions []LexTransition
-	Default     int // default next state (-1 if none)
-	EOF         int // state on EOF (-1 if none)
 }
 
 // LexTransition maps a character range to a next state.
 type LexTransition struct {
 	Lo, Hi    rune // inclusive character range
-	NextState int
+	NextState int32
 	// Skip mirrors tree-sitter's SKIP(state): consume the matched rune
 	// and continue lexing while resetting token start.
 	Skip bool
@@ -75,9 +75,9 @@ type LexTransition struct {
 
 // LexMode maps a parser state to its lexer configuration.
 type LexMode struct {
-	LexState           uint16
-	ExternalLexState   uint16
-	ReservedWordSetID  uint16
+	LexState          uint16
+	ExternalLexState  uint16
+	ReservedWordSetID uint16
 }
 
 // LanguageMetadata holds the grammar's semantic version (ABI 15+).
@@ -115,6 +115,16 @@ type ExternalScanner interface {
 	Serialize(payload any, buf []byte) int
 	Deserialize(payload any, buf []byte)
 	Scan(payload any, lexer *ExternalLexer, validSymbols []bool) bool
+}
+
+// IncrementalReuseExternalScanner is implemented by external scanners that can
+// safely participate in DFA subtree reuse during incremental parses. Scanners
+// with serialized mutable state, such as Python's indentation stack, should
+// leave this unimplemented so edited incremental parses fall back to the
+// conservative full-reparse path.
+type IncrementalReuseExternalScanner interface {
+	ExternalScanner
+	SupportsIncrementalReuse() bool
 }
 
 // Language holds all data needed to parse a specific language.

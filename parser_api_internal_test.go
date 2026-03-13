@@ -1,6 +1,24 @@
 package gotreesitter
 
-import "testing"
+import (
+	"testing"
+)
+
+type parserTestUnsafeExternalScanner struct{}
+
+func (parserTestUnsafeExternalScanner) Create() any                           { return nil }
+func (parserTestUnsafeExternalScanner) Destroy(payload any)                   {}
+func (parserTestUnsafeExternalScanner) Serialize(payload any, buf []byte) int { return 0 }
+func (parserTestUnsafeExternalScanner) Deserialize(payload any, buf []byte)   {}
+func (parserTestUnsafeExternalScanner) Scan(payload any, lexer *ExternalLexer, validSymbols []bool) bool {
+	return false
+}
+
+type parserTestSafeExternalScanner struct {
+	parserTestUnsafeExternalScanner
+}
+
+func (parserTestSafeExternalScanner) SupportsIncrementalReuse() bool { return true }
 
 func TestRepetitionShiftConflictChoice(t *testing.T) {
 	chosen, ok := repetitionShiftConflictChoice([]ParseAction{
@@ -94,6 +112,112 @@ func TestFullParseRetrySecondaryNodeLimitOverride(t *testing.T) {
 	if got != want {
 		t.Fatalf("fullParseRetrySecondaryNodeLimitOverride = %d, want %d", got, want)
 	}
+}
+
+func TestShouldRunInitialFullParseMergeRetry(t *testing.T) {
+	if shouldRunInitialFullParseMergeRetry(nil) {
+		t.Fatal("shouldRunInitialFullParseMergeRetry(nil) = true, want false")
+	}
+	tree := &Tree{
+		parseRuntime: ParseRuntime{
+			StopReason: ParseStopNodeLimit,
+		},
+	}
+	if shouldRunInitialFullParseMergeRetry(tree) {
+		t.Fatal("shouldRunInitialFullParseMergeRetry(node_limit) = true, want false")
+	}
+	tree.parseRuntime.StopReason = ParseStopNoStacksAlive
+	if !shouldRunInitialFullParseMergeRetry(tree) {
+		t.Fatal("shouldRunInitialFullParseMergeRetry(no_stacks_alive) = false, want true")
+	}
+}
+
+func TestParseForRecoveryReusesRecoveryParser(t *testing.T) {
+	parser := NewParser(buildArithmeticLanguage())
+	tree, err := parser.parseForRecovery([]byte("1+2"))
+	if err != nil {
+		t.Fatalf("first parseForRecovery error: %v", err)
+	}
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("first parseForRecovery returned nil tree/root")
+	}
+	tree.Release()
+
+	first := parser.recoveryParser
+	if first == nil {
+		t.Fatal("recoveryParser = nil after first parseForRecovery")
+	}
+	if !first.skipRecoveryReparse {
+		t.Fatal("recoveryParser.skipRecoveryReparse = false, want true")
+	}
+
+	tree, err = parser.parseForRecovery([]byte("3+4"))
+	if err != nil {
+		t.Fatalf("second parseForRecovery error: %v", err)
+	}
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("second parseForRecovery returned nil tree/root")
+	}
+	tree.Release()
+
+	if parser.recoveryParser != first {
+		t.Fatal("parseForRecovery did not reuse recoveryParser instance")
+	}
+}
+
+func TestResetSnippetParserClearsTransientState(t *testing.T) {
+	parser := NewParser(buildArithmeticLanguage())
+	parser.reparseFactory = func(source []byte) (TokenSource, error) { return nil, nil }
+	parser.recoveryParser = NewParser(buildArithmeticLanguage())
+	parser.skipRecoveryReparse = true
+	parser.fullArenaHint = 123
+	parser.included = []Range{{StartByte: 1, EndByte: 2}}
+	parser.logger = func(kind ParserLogType, message string) {}
+	parser.glrTrace = true
+	parser.timeoutMicros = 99
+	flag := uint32(1)
+	parser.cancellationFlag = &flag
+
+	resetSnippetParser(parser)
+
+	if parser.reparseFactory != nil {
+		t.Fatal("resetSnippetParser did not clear reparseFactory")
+	}
+	if parser.recoveryParser != nil {
+		t.Fatal("resetSnippetParser did not clear recoveryParser")
+	}
+	if parser.skipRecoveryReparse {
+		t.Fatal("resetSnippetParser did not clear skipRecoveryReparse")
+	}
+	if parser.fullArenaHint != 0 {
+		t.Fatal("resetSnippetParser did not clear fullArenaHint")
+	}
+	if len(parser.included) != 0 {
+		t.Fatal("resetSnippetParser did not clear included ranges")
+	}
+	if parser.logger != nil {
+		t.Fatal("resetSnippetParser did not clear logger")
+	}
+	if parser.glrTrace {
+		t.Fatal("resetSnippetParser did not clear glrTrace")
+	}
+	if parser.timeoutMicros != 0 {
+		t.Fatal("resetSnippetParser did not clear timeoutMicros")
+	}
+	if parser.cancellationFlag != nil {
+		t.Fatal("resetSnippetParser did not clear cancellationFlag")
+	}
+}
+
+func TestParseWithSnippetParserParsesSource(t *testing.T) {
+	tree, err := parseWithSnippetParser(buildArithmeticLanguage(), []byte("1+2"))
+	if err != nil {
+		t.Fatalf("parseWithSnippetParser error: %v", err)
+	}
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("parseWithSnippetParser returned nil tree/root")
+	}
+	tree.Release()
 }
 
 func TestPreferRetryTreePrefersFurtherAcceptedProgress(t *testing.T) {
@@ -198,14 +322,20 @@ func TestEffectiveFullParseInitialMaxStacks(t *testing.T) {
 	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "scss"}, maxGLRStacks); got != 2 {
 		t.Fatalf("effectiveFullParseInitialMaxStacks(scss) = %d, want 2", got)
 	}
-	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "javascript"}, maxGLRStacks); got != 6 {
-		t.Fatalf("effectiveFullParseInitialMaxStacks(javascript) = %d, want 6", got)
+	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "hcl"}, maxGLRStacks); got != 2 {
+		t.Fatalf("effectiveFullParseInitialMaxStacks(hcl) = %d, want 2", got)
 	}
-	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "typescript"}, maxGLRStacks); got != 6 {
-		t.Fatalf("effectiveFullParseInitialMaxStacks(typescript) = %d, want 6", got)
+	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "javascript"}, maxGLRStacks); got != 2 {
+		t.Fatalf("effectiveFullParseInitialMaxStacks(javascript) = %d, want 2", got)
+	}
+	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "typescript"}, maxGLRStacks); got != 2 {
+		t.Fatalf("effectiveFullParseInitialMaxStacks(typescript) = %d, want 2", got)
 	}
 	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "tsx"}, maxGLRStacks); got != 6 {
 		t.Fatalf("effectiveFullParseInitialMaxStacks(tsx) = %d, want 6", got)
+	}
+	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "python"}, maxGLRStacks); got != 2 {
+		t.Fatalf("effectiveFullParseInitialMaxStacks(python) = %d, want 2", got)
 	}
 	if got := effectiveFullParseInitialMaxStacks(&Language{Name: "rust"}, maxGLRStacks); got != 2 {
 		t.Fatalf("effectiveFullParseInitialMaxStacks(rust) = %d, want 2", got)
@@ -277,5 +407,54 @@ func TestNoteRepeatedReduceChainSignatureResetsOnChange(t *testing.T) {
 	}
 	if count != 1 || prev != second {
 		t.Fatalf("changed signature = (%+v, %d), want (%+v, 1)", prev, count, second)
+	}
+}
+
+func TestShouldNormalizeIncrementalReturnedTree(t *testing.T) {
+	root := &Node{symbol: 1}
+	oldTree := &Tree{root: root}
+	reusedTree := &Tree{root: root}
+	newRootTree := &Tree{root: &Node{symbol: 1}}
+
+	if shouldNormalizeIncrementalReturnedTree(nil, oldTree) {
+		t.Fatal("shouldNormalizeIncrementalReturnedTree(nil, oldTree) = true, want false")
+	}
+	if shouldNormalizeIncrementalReturnedTree(reusedTree, oldTree) {
+		t.Fatal("shouldNormalizeIncrementalReturnedTree(reusedTree, oldTree) = true, want false")
+	}
+	if !shouldNormalizeIncrementalReturnedTree(newRootTree, oldTree) {
+		t.Fatal("shouldNormalizeIncrementalReturnedTree(newRootTree, oldTree) = false, want true")
+	}
+	if !shouldNormalizeIncrementalReturnedTree(reusedTree, nil) {
+		t.Fatal("shouldNormalizeIncrementalReturnedTree(reusedTree, nil) = false, want true")
+	}
+}
+
+func TestLanguageSupportsIncrementalReuse(t *testing.T) {
+	if languageSupportsIncrementalReuse(nil) {
+		t.Fatal("languageSupportsIncrementalReuse(nil) = true, want false")
+	}
+	if !languageSupportsIncrementalReuse(&Language{}) {
+		t.Fatal("languageSupportsIncrementalReuse(no scanner) = false, want true")
+	}
+	if languageSupportsIncrementalReuse(&Language{ExternalScanner: parserTestUnsafeExternalScanner{}}) {
+		t.Fatal("languageSupportsIncrementalReuse(unsafe scanner) = true, want false")
+	}
+	if !languageSupportsIncrementalReuse(&Language{ExternalScanner: parserTestSafeExternalScanner{}}) {
+		t.Fatal("languageSupportsIncrementalReuse(safe scanner) = false, want true")
+	}
+}
+
+func TestIncrementalReuseUnavailableReason(t *testing.T) {
+	if got := incrementalReuseUnavailableReason(nil); got != "token_source_nil" {
+		t.Fatalf("incrementalReuseUnavailableReason(nil) = %q, want %q", got, "token_source_nil")
+	}
+	unsafeTS := &dfaTokenSource{language: &Language{ExternalScanner: parserTestUnsafeExternalScanner{}}}
+	if got := incrementalReuseUnavailableReason(unsafeTS); got != "external_scanner_unsupported" {
+		t.Fatalf("incrementalReuseUnavailableReason(unsafe external scanner) = %q, want %q", got, "external_scanner_unsupported")
+	}
+	safeTS := &dfaTokenSource{language: &Language{ExternalScanner: parserTestSafeExternalScanner{}}}
+	if got := incrementalReuseUnavailableReason(safeTS); got != "" {
+		t.Fatalf("incrementalReuseUnavailableReason(safe external scanner) = %q, want empty", got)
 	}
 }

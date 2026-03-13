@@ -12,11 +12,15 @@ type dfaTokenSource struct {
 	language *Language
 	state    StateID
 
-	lookupActionIndex func(state StateID, sym Symbol) uint16
-	hasKeywordState   []bool
-	externalPayload   any
-	externalValid     []bool
-	glrStates         []StateID // all active GLR stack states
+	lookupActionIndex  func(state StateID, sym Symbol) uint16
+	hasKeywordState    []bool
+	externalPayload    any
+	externalValid      []bool
+	externalSnapshot   []byte
+	externalRetrySnap  []byte
+	externalLexer      ExternalLexer
+	externalRetryLexer ExternalLexer
+	glrStates          []StateID // all active GLR stack states
 
 	// Zero-width external token loop prevention.
 	// Tracks which external token indices have been produced as zero-width
@@ -53,27 +57,54 @@ var dfaTokenSourcePool = sync.Pool{
 
 func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool) *dfaTokenSource {
 	ts := dfaTokenSourcePool.Get().(*dfaTokenSource)
+	*ts = dfaTokenSource{
+		extZeroPos:   -1,
+		zeroWidthPos: -1,
+	}
 	ts.lexer = lexer
 	ts.language = language
 	ts.state = 0
 	ts.lookupActionIndex = lookupActionIndex
 	ts.hasKeywordState = hasKeywordState
-	ts.externalPayload = nil
-	ts.glrStates = nil
-	if len(ts.externalValid) > 0 {
-		ts.externalValid = ts.externalValid[:0]
-	}
-	ts.extZeroPos = -1
-	ts.extZeroState = 0
-	if len(ts.extZeroTried) > 0 {
-		ts.extZeroTried = ts.extZeroTried[:0]
-	}
-	ts.zeroWidthPos = -1
-	ts.zeroWidthCount = 0
 	if language != nil && language.ExternalScanner != nil {
 		ts.externalPayload = language.ExternalScanner.Create()
 	}
 	return ts
+}
+
+func (d *dfaTokenSource) Reset(source []byte) {
+	if d == nil {
+		return
+	}
+	if d.lexer == nil {
+		d.lexer = NewLexer(nil, source)
+	}
+	d.lexer.source = source
+	d.lexer.pos = 0
+	d.lexer.row = 0
+	d.lexer.col = 0
+	if d.language != nil {
+		d.lexer.states = d.language.LexStates
+	}
+	d.state = 0
+	d.glrStates = nil
+	if len(d.externalValid) > 0 {
+		d.externalValid = d.externalValid[:0]
+	}
+	if len(d.extZeroTried) > 0 {
+		d.extZeroTried = d.extZeroTried[:0]
+	}
+	d.extZeroPos = -1
+	d.extZeroState = 0
+	d.zeroWidthPos = -1
+	d.zeroWidthCount = 0
+	if d.language == nil || d.language.ExternalScanner == nil {
+		return
+	}
+	if d.externalPayload != nil {
+		d.language.ExternalScanner.Destroy(d.externalPayload)
+	}
+	d.externalPayload = d.language.ExternalScanner.Create()
 }
 
 func (d *dfaTokenSource) Close() {
@@ -711,7 +742,8 @@ func (d *dfaTokenSource) nextExternalToken() (Token, bool) {
 		return tok, true
 	}
 
-	el := newExternalLexer(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
+	el := &d.externalLexer
+	el.reset(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
 	if !d.runExternalScannerWithRetry(el, valid) {
 		return Token{}, false
 	}
@@ -768,7 +800,7 @@ func (d *dfaTokenSource) nextGLRScoredExternalToken(states []StateID) (Token, bo
 	startPos := d.lexer.pos
 	startRow := d.lexer.row
 	startCol := d.lexer.col
-	snapshot := d.captureExternalScannerState()
+	snapshot := d.captureExternalScannerStateInto(&d.externalSnapshot)
 
 	bestFound := false
 	bestELS := -1
@@ -785,7 +817,8 @@ func (d *dfaTokenSource) nextGLRScoredExternalToken(states []StateID) (Token, bo
 		row := d.language.ExternalLexStates[elsID]
 		d.restoreExternalScannerState(snapshot)
 
-		el := newExternalLexer(d.lexer.source, startPos, startRow, startCol)
+		el := &d.externalLexer
+		el.reset(d.lexer.source, startPos, startRow, startCol)
 		if !d.runExternalScannerWithRetry(el, row) {
 			continue
 		}
@@ -852,7 +885,8 @@ func (d *dfaTokenSource) nextGLRScoredExternalToken(states []StateID) (Token, bo
 		return Token{}, false
 	}
 
-	el := newExternalLexer(d.lexer.source, startPos, startRow, startCol)
+	el := &d.externalLexer
+	el.reset(d.lexer.source, startPos, startRow, startCol)
 	if !d.runExternalScannerWithRetry(el, d.language.ExternalLexStates[bestELS]) {
 		d.restoreExternalScannerState(snapshot)
 		return Token{}, false
@@ -892,7 +926,7 @@ func (d *dfaTokenSource) runExternalScannerWithRetry(el *ExternalLexer, valid []
 	if d == nil || d.language == nil || d.language.ExternalScanner == nil || el == nil {
 		return false
 	}
-	snapshot := d.captureExternalScannerState()
+	snapshot := d.captureExternalScannerStateInto(&d.externalRetrySnap)
 	if RunExternalScanner(d.language, d.externalPayload, el, valid) {
 		return true
 	}
@@ -921,7 +955,8 @@ func (d *dfaTokenSource) runExternalScannerWithRetry(el *ExternalLexer, valid []
 		}
 
 		d.restoreExternalScannerState(snapshot)
-		retryLexer := newExternalLexer(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
+		retryLexer := &d.externalRetryLexer
+		retryLexer.reset(d.lexer.source, d.lexer.pos, d.lexer.row, d.lexer.col)
 		if RunExternalScanner(d.language, d.externalPayload, retryLexer, masked) {
 			*el = *retryLexer
 			return true
@@ -930,20 +965,28 @@ func (d *dfaTokenSource) runExternalScannerWithRetry(el *ExternalLexer, valid []
 			d.restoreExternalScannerState(snapshot)
 			return false
 		}
-		el = retryLexer
+		*el = *retryLexer
 	}
 }
 
-func (d *dfaTokenSource) captureExternalScannerState() []byte {
+func (d *dfaTokenSource) captureExternalScannerStateInto(dst *[]byte) []byte {
 	if d == nil || d.language == nil || d.language.ExternalScanner == nil {
 		return nil
 	}
-	var buf [externalScannerSerializationBufferSize]byte
-	n := d.language.ExternalScanner.Serialize(d.externalPayload, buf[:])
-	if n <= 0 {
+	if dst == nil {
 		return nil
 	}
-	return append([]byte(nil), buf[:n]...)
+	if cap(*dst) < externalScannerSerializationBufferSize {
+		*dst = make([]byte, externalScannerSerializationBufferSize)
+	}
+	buf := (*dst)[:externalScannerSerializationBufferSize]
+	n := d.language.ExternalScanner.Serialize(d.externalPayload, buf)
+	if n <= 0 {
+		*dst = (*dst)[:0]
+		return nil
+	}
+	*dst = buf[:n]
+	return *dst
 }
 
 func (d *dfaTokenSource) restoreExternalScannerState(snapshot []byte) {

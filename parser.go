@@ -17,33 +17,38 @@ import (
 // Parser is not safe for concurrent use. Use one parser per goroutine, a
 // ParserPool, or guard shared parser instances with external synchronization.
 type Parser struct {
-	language            *Language
-	reuseCursor         reuseCursor
-	reuseScratch        reuseScratch
-	reuseMu             sync.Mutex
-	reparseFactory      normalizationTokenSourceFactory
-	skipRecoveryReparse bool
-	fullArenaHint       uint32
-	rootSymbol          Symbol
-	hasRootSymbol       bool
-	hasRecoverState     []bool
-	hasRecoverSymbol    []bool
-	recoverByState      [][]recoverSymbolAction
-	hasKeywordState     []bool
-	forceRawSpanAll     bool
-	forceRawSpanTable   []bool
-	included            []Range
-	logger              ParserLogger
-	glrTrace            bool // temporary: verbose GLR stack tracing
-	maxConflictWidth    int  // widest N-way conflict in the parse table
-	timeoutMicros       uint64
-	cancellationFlag    *uint32
-	denseLimit          int
-	smallBase           int
-	smallLookup         [][]smallActionPair
-	reduceAliasSeq      [][]Symbol
-	reduceHasFields     []bool
+	language               *Language
+	reuseCursor            reuseCursor
+	reuseScratch           reuseScratch
+	reuseMu                sync.Mutex
+	reparseFactory         normalizationTokenSourceFactory
+	recoveryParser         *Parser
+	skipRecoveryReparse    bool
+	fullArenaHint          uint32
+	rootSymbol             Symbol
+	hasRootSymbol          bool
+	hasRecoverState        []bool
+	hasRecoverSymbol       []bool
+	recoverByState         [][]recoverSymbolAction
+	hasKeywordState        []bool
+	forceRawSpanAll        bool
+	forceRawSpanTable      []bool
+	included               []Range
+	logger                 ParserLogger
+	glrTrace               bool // temporary: verbose GLR stack tracing
+	maxConflictWidth       int  // widest N-way conflict in the parse table
+	timeoutMicros          uint64
+	cancellationFlag       *uint32
+	denseLimit             int
+	smallBase              int
+	smallLookup            [][]smallActionPair
+	reduceAliasSeq         [][]Symbol
+	reduceHasFields        []bool
+	fieldInheritedScratch  []bool
+	fieldConflictedScratch []bool
 }
+
+var snippetParserPools sync.Map
 
 type smallActionPair struct {
 	sym uint16
@@ -77,35 +82,69 @@ const (
 // ReuseCursorNanos includes reuse-cursor setup and subtree-candidate checks.
 // ReparseNanos includes the remainder of incremental parsing/rebuild work.
 type IncrementalParseProfile struct {
-	ReuseCursorNanos   int64
-	ReparseNanos       int64
-	ReusedSubtrees     uint64
-	ReusedBytes        uint64
-	NewNodesAllocated  uint64
-	RecoverSearches    uint64
-	RecoverStateChecks uint64
-	RecoverStateSkips  uint64
-	RecoverSymbolSkips uint64
-	RecoverLookups     uint64
-	RecoverHits        uint64
-	MaxStacksSeen      int
-	EntryScratchPeak   uint64
+	ReuseCursorNanos                   int64
+	ReparseNanos                       int64
+	ReusedSubtrees                     uint64
+	ReusedBytes                        uint64
+	NewNodesAllocated                  uint64
+	ReuseUnsupported                   bool
+	ReuseUnsupportedReason             string
+	ReuseRejectDirty                   uint64
+	ReuseRejectAncestorDirtyBeforeEdit uint64
+	ReuseRejectHasError                uint64
+	ReuseRejectInvalidSpan             uint64
+	ReuseRejectOutOfBounds             uint64
+	ReuseRejectRootNonLeafChanged      uint64
+	ReuseRejectLargeNonLeaf            uint64
+	RecoverSearches                    uint64
+	RecoverStateChecks                 uint64
+	RecoverStateSkips                  uint64
+	RecoverSymbolSkips                 uint64
+	RecoverLookups                     uint64
+	RecoverHits                        uint64
+	MaxStacksSeen                      int
+	EntryScratchPeak                   uint64
+	StopReason                         ParseStopReason
+	TokensConsumed                     uint64
+	LastTokenEndByte                   uint32
+	ExpectedEOFByte                    uint32
+	ArenaBytesAllocated                int64
+	ScratchBytesAllocated              int64
+	EntryScratchBytesAllocated         int64
+	GSSBytesAllocated                  int64
 }
 
 type incrementalParseTiming struct {
-	totalNanos         int64
-	reuseNanos         int64
-	reusedSubtrees     uint64
-	reusedBytes        uint64
-	newNodes           uint64
-	recoverSearches    uint64
-	recoverStateChecks uint64
-	recoverStateSkips  uint64
-	recoverSymbolSkips uint64
-	recoverLookups     uint64
-	recoverHits        uint64
-	maxStacksSeen      int
-	entryScratchPeak   uint64
+	totalNanos                         int64
+	reuseNanos                         int64
+	reusedSubtrees                     uint64
+	reusedBytes                        uint64
+	newNodes                           uint64
+	reuseUnsupported                   bool
+	reuseUnsupportedReason             string
+	reuseRejectDirty                   uint64
+	reuseRejectAncestorDirtyBeforeEdit uint64
+	reuseRejectHasError                uint64
+	reuseRejectInvalidSpan             uint64
+	reuseRejectOutOfBounds             uint64
+	reuseRejectRootNonLeafChanged      uint64
+	reuseRejectLargeNonLeaf            uint64
+	recoverSearches                    uint64
+	recoverStateChecks                 uint64
+	recoverStateSkips                  uint64
+	recoverSymbolSkips                 uint64
+	recoverLookups                     uint64
+	recoverHits                        uint64
+	maxStacksSeen                      int
+	entryScratchPeak                   uint64
+	stopReason                         ParseStopReason
+	tokensConsumed                     uint64
+	lastTokenEndByte                   uint32
+	expectedEOFByte                    uint32
+	arenaBytesAllocated                int64
+	scratchBytesAllocated              int64
+	entryScratchBytesAllocated         uint64
+	gssBytesAllocated                  uint64
 }
 
 type parseReuseState struct {
@@ -146,31 +185,58 @@ func NewParser(lang *Language) *Parser {
 	return p
 }
 
-func buildReduceAliasSequences(lang *Language) [][]Symbol {
-	if lang == nil || len(lang.AliasSequences) == 0 {
+func snippetParserPool(lang *Language) *sync.Pool {
+	if lang == nil {
 		return nil
 	}
-	out := make([][]Symbol, len(lang.AliasSequences))
-	for i, seq := range lang.AliasSequences {
-		for j := range seq {
-			if seq[j] != 0 {
-				out[i] = seq
-				break
-			}
-		}
+	if pool, ok := snippetParserPools.Load(lang); ok {
+		return pool.(*sync.Pool)
 	}
-	return out
+	pool := &sync.Pool{
+		New: func() any {
+			return NewParser(lang)
+		},
+	}
+	actual, _ := snippetParserPools.LoadOrStore(lang, pool)
+	return actual.(*sync.Pool)
 }
 
-func buildReduceFieldPresence(lang *Language) []bool {
-	if lang == nil || len(lang.FieldMapSlices) == 0 {
+func acquireSnippetParser(lang *Language) *Parser {
+	pool := snippetParserPool(lang)
+	if pool == nil {
 		return nil
 	}
-	out := make([]bool, len(lang.FieldMapSlices))
-	for i, fm := range lang.FieldMapSlices {
-		out[i] = fm[1] != 0
+	parser, _ := pool.Get().(*Parser)
+	if parser == nil {
+		parser = NewParser(lang)
 	}
-	return out
+	resetSnippetParser(parser)
+	return parser
+}
+
+func releaseSnippetParser(parser *Parser) {
+	if parser == nil || parser.language == nil {
+		return
+	}
+	resetSnippetParser(parser)
+	if pool := snippetParserPool(parser.language); pool != nil {
+		pool.Put(parser)
+	}
+}
+
+func resetSnippetParser(parser *Parser) {
+	if parser == nil {
+		return
+	}
+	parser.reparseFactory = nil
+	parser.recoveryParser = nil
+	parser.skipRecoveryReparse = false
+	parser.fullArenaHint = 0
+	parser.included = nil
+	parser.logger = nil
+	parser.glrTrace = false
+	parser.timeoutMicros = 0
+	parser.cancellationFlag = nil
 }
 
 // computeMaxConflictWidth scans the parse action table and returns the
@@ -720,9 +786,22 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 	// Subtree reuse is safe for DFA token sources without external scanners
 	// and for custom token sources that explicitly opt in.
 	if !tokenSourceSupportsIncrementalReuse(ts) {
-		arenaClass := incrementalArenaClassForSource(source)
-		// Keep parse-time memory behavior consistent with incremental parses.
-		return p.parseInternal(source, ts, nil, nil, arenaClass, timing, 0, 0, 0, false)
+		if timing != nil {
+			timing.reuseUnsupported = true
+			timing.reuseUnsupportedReason = incrementalReuseUnavailableReason(ts)
+		}
+		// When subtree reuse is unavailable, incremental reparses should behave
+		// like ordinary full parses, including retry widening. This keeps
+		// conservative fallback paths for external-scanner languages on the same
+		// correctness footing as Parse.
+		deterministicExternalConflicts := fullParseUsesDeterministicExternalConflicts(p.language)
+		initialMaxStacks := fullParseInitialMaxStacks(p.language, p.maxConflictWidth)
+		tree := p.parseInternal(source, ts, nil, nil, arenaClassFull, timing, initialMaxStacks, 0, 0, deterministicExternalConflicts)
+		tree = p.retryFullParseWithTokenSource(source, ts, initialMaxStacks, deterministicExternalConflicts, tree)
+		if shouldRepeatExternalScannerFullParse(p.language, tree) {
+			tree = p.retryFullParseWithTokenSource(source, ts, initialMaxStacks, deterministicExternalConflicts, tree)
+		}
+		return tree
 	}
 
 	p.reuseMu.Lock()
@@ -740,6 +819,15 @@ func (p *Parser) parseIncrementalInternal(source []byte, oldTree *Tree, ts Token
 	tree := p.parseInternal(source, ts, reuse, oldTree, arenaClass, timing, 0, 0, 0, false)
 	if reuse != nil {
 		if timing != nil {
+			timing.reuseRejectDirty += reuse.rejectDirty
+			timing.reuseRejectAncestorDirtyBeforeEdit += reuse.rejectAncestorDirtyBeforeEdit
+			timing.reuseRejectHasError += reuse.rejectHasError
+			timing.reuseRejectInvalidSpan += reuse.rejectInvalidSpan
+			timing.reuseRejectOutOfBounds += reuse.rejectOutOfBounds
+			timing.reuseRejectRootNonLeafChanged += reuse.rejectRootNonLeafChanged
+			timing.reuseRejectLargeNonLeaf += reuse.rejectLargeNonLeaf
+		}
+		if timing != nil {
 			reuseStart := time.Now()
 			reuse.commitScratch(&p.reuseScratch)
 			timing.reuseNanos += time.Since(reuseStart).Nanoseconds()
@@ -755,12 +843,47 @@ func tokenSourceSupportsIncrementalReuse(ts TokenSource) bool {
 		return false
 	}
 	if dts, ok := ts.(*dfaTokenSource); ok {
-		return dts.language == nil || dts.language.ExternalScanner == nil
+		return languageSupportsIncrementalReuse(dts.language)
 	}
 	if reusable, ok := ts.(IncrementalReuseTokenSource); ok {
 		return reusable.SupportsIncrementalReuse()
 	}
 	return false
+}
+
+func languageSupportsIncrementalReuse(lang *Language) bool {
+	if lang == nil {
+		return false
+	}
+	if lang.ExternalScanner == nil {
+		return true
+	}
+	if reusable, ok := lang.ExternalScanner.(IncrementalReuseExternalScanner); ok {
+		return reusable.SupportsIncrementalReuse()
+	}
+	return false
+}
+
+func incrementalReuseUnavailableReason(ts TokenSource) string {
+	if ts == nil {
+		return "token_source_nil"
+	}
+	if dts, ok := ts.(*dfaTokenSource); ok {
+		if dts.language == nil {
+			return "dfa_token_source_no_language"
+		}
+		if languageSupportsIncrementalReuse(dts.language) {
+			return ""
+		}
+		if dts.language.ExternalScanner != nil {
+			return "external_scanner_unsupported"
+		}
+		return "dfa_token_source_no_reuse"
+	}
+	if _, ok := ts.(IncrementalReuseTokenSource); ok {
+		return ""
+	}
+	return "token_source_no_incremental_reuse"
 }
 
 func incrementalArenaClassForSource(source []byte) arenaClass {
@@ -864,10 +987,12 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	}
 	switch arenaClass {
 	case arenaClassFull:
-		arena.ensureNodeCapacity(parseFullArenaNodeCapacity(len(source), p.fullArenaHintCapacity()))
+		target := parseFullArenaNodeCapacity(len(source), p.fullArenaHintCapacity())
+		arena.ensureNodeCapacity(target)
 		scratch.entries.ensureInitialCap(parseFullEntryScratchCapacity(len(source)))
 	case arenaClassIncremental:
-		arena.ensureNodeCapacity(parseIncrementalArenaNodeCapacity(len(source)))
+		target := parseIncrementalArenaNodeCapacity(len(source))
+		arena.ensureNodeCapacity(target)
 		scratch.entries.ensureInitialCap(parseIncrementalEntryScratchCapacity(len(source)))
 	}
 	arena.setBudget(parseMemoryBudget(len(source)))
@@ -935,6 +1060,16 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		}
 		if tree != nil {
 			tree.setParseRuntime(parseRuntime)
+		}
+		if timing != nil {
+			timing.stopReason = parseRuntime.StopReason
+			timing.tokensConsumed = parseRuntime.TokensConsumed
+			timing.lastTokenEndByte = parseRuntime.LastTokenEndByte
+			timing.expectedEOFByte = parseRuntime.ExpectedEOFByte
+			timing.arenaBytesAllocated = parseRuntime.ArenaBytesAllocated
+			timing.scratchBytesAllocated = parseRuntime.ScratchBytesAllocated
+			timing.entryScratchBytesAllocated = uint64(parseRuntime.EntryScratchBytesAllocated)
+			timing.gssBytesAllocated = uint64(parseRuntime.GSSBytesAllocated)
 		}
 		if p.logger != nil {
 			p.logf(

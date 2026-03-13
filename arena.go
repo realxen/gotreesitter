@@ -398,6 +398,7 @@ func (a *nodeArena) allocNodeFast() *Node {
 	if a.used < len(a.nodes) {
 		n := &a.nodes[a.used]
 		a.used++
+		*n = Node{}
 		return n
 	}
 	return a.allocNodeSlow()
@@ -429,7 +430,9 @@ func (a *nodeArena) allocNodeSlow() *Node {
 		slab.used++
 		a.nodeSlabCursor = i
 		a.used++
-		return &slab.data[idx]
+		n := &slab.data[idx]
+		*n = Node{}
+		return n
 	}
 }
 
@@ -483,7 +486,12 @@ func (a *nodeArena) allocNodeSlice(n int) []*Node {
 		start := slab.used
 		slab.used += n
 		a.childSlabCursor = i
-		return slab.data[start:slab.used]
+		out := slab.data[start:slab.used]
+		// Full-parse arena reset can skip bulk child-slab clearing to avoid
+		// large memclr work on release. Zero the slice on allocation so reused
+		// child slabs never leak stale child pointers into later parses.
+		clear(out)
+		return out
 	}
 }
 

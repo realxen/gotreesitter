@@ -26,17 +26,25 @@ type ExternalLexer struct {
 	hasResult    bool
 }
 
-func newExternalLexer(source []byte, pos int, row, col uint32) *ExternalLexer {
+func (l *ExternalLexer) reset(source []byte, pos int, row, col uint32) {
 	pt := Point{Row: row, Column: col}
-	return &ExternalLexer{
-		source:     source,
-		startPos:   pos,
-		pos:        pos,
-		endPos:     pos,
-		startPoint: pt,
-		point:      pt,
-		endPoint:   pt,
-	}
+	l.source = source
+	l.startPos = pos
+	l.pos = pos
+	l.endPos = pos
+	l.startPoint = pt
+	l.point = pt
+	l.endPoint = pt
+	l.endMarked = false
+	l.advancedContent = false
+	l.resultSymbol = 0
+	l.hasResult = false
+}
+
+func newExternalLexer(source []byte, pos int, row, col uint32) *ExternalLexer {
+	l := &ExternalLexer{}
+	l.reset(source, pos, row, col)
+	return l
 }
 
 // Lookahead returns the current rune or 0 at EOF.

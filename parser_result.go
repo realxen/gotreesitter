@@ -3513,8 +3513,7 @@ func phpReparsedTopLevelSuffix(source []byte, start uint32, lang *Language, aren
 	wrapped := make([]byte, 0, len(prefix)+len(source)-int(start))
 	wrapped = append(wrapped, prefix...)
 	wrapped = append(wrapped, source[start:]...)
-	parser := NewParser(lang)
-	tree, err := parser.Parse(wrapped)
+	tree, err := parseWithSnippetParser(lang, wrapped)
 	if err != nil || tree == nil || tree.RootNode() == nil {
 		return nil, false
 	}
@@ -8289,12 +8288,8 @@ func scalaRecoverSplitFunctionDefinitionFromRange(source []byte, fnStart, fnEnd 
 	if lang == nil || int(fnStart) >= len(source) || fnEnd <= fnStart || int(fnEnd) > len(source) {
 		return nil, false
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[fnStart:fnEnd])
+	tree, err := parseWithSnippetParser(lang, source[fnStart:fnEnd])
 	if err != nil || tree == nil || tree.RootNode() == nil {
-		if tree != nil {
-			tree.Release()
-		}
 		return nil, false
 	}
 	defer tree.Release()
@@ -8547,8 +8542,7 @@ func scalaRecoverBlockStatementNode(source []byte, start, end uint32, lang *Lang
 	if end <= start || int(end) > len(source) {
 		return nil, false
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[start:end])
+	tree, err := parseWithSnippetParser(lang, source[start:end])
 	if err == nil && tree != nil && tree.RootNode() != nil {
 		defer tree.Release()
 		startPoint := advancePointByBytes(Point{}, source[:start])
@@ -8672,12 +8666,8 @@ func scalaRecoverSingleExpressionNode(source []byte, start, end uint32, lang *La
 	if end <= start || int(end) > len(source) {
 		return nil, false
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[start:end])
+	tree, err := parseWithSnippetParser(lang, source[start:end])
 	if err != nil || tree == nil || tree.RootNode() == nil {
-		if tree != nil {
-			tree.Release()
-		}
 		return nil, false
 	}
 	defer tree.Release()
@@ -8724,12 +8714,8 @@ found:
 	if pos >= limit || source[pos] != '@' {
 		return nil
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[pos:fnEnd])
+	tree, err := parseWithSnippetParser(lang, source[pos:fnEnd])
 	if err != nil || tree == nil || tree.RootNode() == nil {
-		if tree != nil {
-			tree.Release()
-		}
 		return nil
 	}
 	defer tree.Release()
@@ -9022,12 +9008,8 @@ func scalaRecoverTopLevelClassNodeFromRange(source []byte, classStart, classEnd 
 	if lang == nil || int(classStart) >= len(source) || classEnd <= classStart || int(classEnd) > len(source) {
 		return nil, false
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[classStart:classEnd])
+	tree, err := parseWithSnippetParser(lang, source[classStart:classEnd])
 	if err != nil || tree == nil || tree.RootNode() == nil {
-		if tree != nil {
-			tree.Release()
-		}
 		return nil, false
 	}
 	defer tree.Release()
@@ -9188,12 +9170,8 @@ func scalaRecoverTopLevelObjectNodeFromRange(source []byte, objectStart, objectE
 	if lang == nil || int(objectStart) >= len(source) || objectEnd <= objectStart || int(objectEnd) > len(source) {
 		return nil, false
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[objectStart:objectEnd])
+	tree, err := parseWithSnippetParser(lang, source[objectStart:objectEnd])
 	if err != nil || tree == nil || tree.RootNode() == nil {
-		if tree != nil {
-			tree.Release()
-		}
 		return nil, false
 	}
 	defer tree.Release()
@@ -9290,12 +9268,8 @@ func scalaRecoverTopLevelNamedNodeFromRange(source []byte, start, end uint32, la
 	if lang == nil || int(start) >= len(source) || end <= start || int(end) > len(source) {
 		return nil, false
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[start:end])
+	tree, err := parseWithSnippetParser(lang, source[start:end])
 	if err != nil || tree == nil || tree.RootNode() == nil {
-		if tree != nil {
-			tree.Release()
-		}
 		return nil, false
 	}
 	defer tree.Release()
@@ -9324,12 +9298,8 @@ func scalaRecoverTopLevelFunctionNodeFromRange(source []byte, fnStart, fnEnd uin
 	if lang == nil || int(fnStart) >= len(source) || fnEnd <= fnStart || int(fnEnd) > len(source) {
 		return nil, false
 	}
-	parser := NewParser(lang)
-	tree, err := parser.Parse(source[fnStart:fnEnd])
+	tree, err := parseWithSnippetParser(lang, source[fnStart:fnEnd])
 	if err != nil || tree == nil || tree.RootNode() == nil {
-		if tree != nil {
-			tree.Release()
-		}
 		return nil, false
 	}
 	defer tree.Release()

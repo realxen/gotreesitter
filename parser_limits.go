@@ -64,9 +64,10 @@ func parseFullArenaNodeCapacity(sourceLen, hint int) int {
 	if sourceLen <= 0 {
 		return base
 	}
-	// Conservative first-pass sizing. We refine this with adaptive hints
-	// from observed full-parse node usage.
-	estimate := sourceLen * 6
+	// Conservative first-pass sizing. A smaller initial multiplier keeps
+	// large external-scanner languages from front-loading arena bytes that
+	// never become live, while adaptive hints still scale subsequent parses.
+	estimate := sourceLen * 4
 	const maxPreallocNodes = 1_500_000
 	if estimate > maxPreallocNodes {
 		estimate = maxPreallocNodes

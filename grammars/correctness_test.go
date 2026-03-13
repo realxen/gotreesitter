@@ -73,6 +73,10 @@ func TestCorrectnessSnapshots(t *testing.T) {
 			if !ok {
 				t.Fatalf("language %q not registered", name)
 			}
+			// Snapshot tests should always load a fresh embedded language so
+			// preceding package tests cannot leak cached runtime mutations into
+			// the golden parse surface.
+			UnloadEmbeddedLanguage(entry.Name + ".bin")
 			t.Cleanup(func() { UnloadEmbeddedLanguage(entry.Name + ".bin") })
 			lang := entry.Language()
 			report := EvaluateParseSupport(entry, lang)

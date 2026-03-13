@@ -661,6 +661,10 @@ func newLeafNodeInArena(arena *nodeArena, sym Symbol, named bool, startByte, end
 }
 
 func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16) *Node {
+	return newParentNodeInArenaWithFieldSources(arena, sym, named, children, fieldIDs, nil, productionID)
+}
+
+func newParentNodeInArenaWithFieldSources(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, fieldSources []uint8, productionID uint16) *Node {
 	if arena == nil {
 		return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 	}
@@ -673,7 +677,11 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
-	n.fieldSources = defaultFieldSourcesInArena(arena, fieldIDs)
+	if fieldSources != nil {
+		n.fieldSources = fieldSources
+	} else {
+		n.fieldSources = defaultFieldSourcesInArena(arena, fieldIDs)
+	}
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNode(n, children)
@@ -681,6 +689,10 @@ func newParentNodeInArena(arena *nodeArena, sym Symbol, named bool, children []*
 }
 
 func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, productionID uint16, trackChildErrors bool) *Node {
+	return newParentNodeInArenaNoLinksWithFieldSources(arena, sym, named, children, fieldIDs, nil, productionID, trackChildErrors)
+}
+
+func newParentNodeInArenaNoLinksWithFieldSources(arena *nodeArena, sym Symbol, named bool, children []*Node, fieldIDs []FieldID, fieldSources []uint8, productionID uint16, trackChildErrors bool) *Node {
 	if arena == nil {
 		return newParentNode(nil, sym, named, children, fieldIDs, productionID)
 	}
@@ -693,7 +705,11 @@ func newParentNodeInArenaNoLinks(arena *nodeArena, sym Symbol, named bool, child
 	n.isNamed = named
 	n.children = children
 	n.fieldIDs = fieldIDs
-	n.fieldSources = defaultFieldSourcesInArena(arena, fieldIDs)
+	if fieldSources != nil {
+		n.fieldSources = fieldSources
+	} else {
+		n.fieldSources = defaultFieldSourcesInArena(arena, fieldIDs)
+	}
 	n.productionID = productionID
 	n.childIndex = -1
 	populateParentNodeNoLinks(n, children, trackChildErrors)

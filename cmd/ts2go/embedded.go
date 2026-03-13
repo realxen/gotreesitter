@@ -232,7 +232,7 @@ func convertLexStates(src []LexStateEntry) []gotreesitter.LexState {
 			AcceptToken: gotreesitter.Symbol(s.Accept),
 			Skip:        false,
 			Default:     -1,
-			EOF:         s.EOF,
+			EOF:         int32(s.EOF),
 		}
 		if len(s.Transitions) > 0 {
 			state.Transitions = make([]gotreesitter.LexTransition, len(s.Transitions))
@@ -240,7 +240,7 @@ func convertLexStates(src []LexStateEntry) []gotreesitter.LexState {
 				state.Transitions[j] = gotreesitter.LexTransition{
 					Lo:        t.Lo,
 					Hi:        t.Hi,
-					NextState: t.Next,
+					NextState: int32(t.Next),
 					Skip:      t.Skip,
 				}
 			}

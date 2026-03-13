@@ -76,12 +76,22 @@ func (s *includedRangeTokenSource) SupportsIncrementalReuse() bool {
 		return false
 	}
 	if dts, ok := s.base.(*dfaTokenSource); ok {
-		return dts.language == nil || dts.language.ExternalScanner == nil
+		return languageSupportsIncrementalReuse(dts.language)
 	}
 	if reusable, ok := s.base.(IncrementalReuseTokenSource); ok {
 		return reusable.SupportsIncrementalReuse()
 	}
 	return false
+}
+
+func (s *includedRangeTokenSource) Reset(source []byte) {
+	if s == nil {
+		return
+	}
+	s.idx = 0
+	if resettable, ok := s.base.(interface{ Reset([]byte) }); ok {
+		resettable.Reset(source)
+	}
 }
 
 func (s *includedRangeTokenSource) Close() {
