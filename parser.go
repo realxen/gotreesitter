@@ -17,35 +17,39 @@ import (
 // Parser is not safe for concurrent use. Use one parser per goroutine, a
 // ParserPool, or guard shared parser instances with external synchronization.
 type Parser struct {
-	language               *Language
-	reuseCursor            reuseCursor
-	reuseScratch           reuseScratch
-	reuseMu                sync.Mutex
-	reparseFactory         normalizationTokenSourceFactory
-	recoveryParser         *Parser
-	skipRecoveryReparse    bool
-	fullArenaHint          uint32
-	rootSymbol             Symbol
-	hasRootSymbol          bool
-	hasRecoverState        []bool
-	hasRecoverSymbol       []bool
-	recoverByState         [][]recoverSymbolAction
-	hasKeywordState        []bool
-	forceRawSpanAll        bool
-	forceRawSpanTable      []bool
-	included               []Range
-	logger                 ParserLogger
-	glrTrace               bool // temporary: verbose GLR stack tracing
-	maxConflictWidth       int  // widest N-way conflict in the parse table
-	timeoutMicros          uint64
-	cancellationFlag       *uint32
-	denseLimit             int
-	smallBase              int
-	smallLookup            [][]smallActionPair
-	reduceAliasSeq         [][]Symbol
-	reduceHasFields        []bool
-	fieldInheritedScratch  []bool
-	fieldConflictedScratch []bool
+	language                            *Language
+	reuseCursor                         reuseCursor
+	reuseScratch                        reuseScratch
+	reuseMu                             sync.Mutex
+	reparseFactory                      normalizationTokenSourceFactory
+	recoveryParser                      *Parser
+	skipRecoveryReparse                 bool
+	fullArenaHint                       uint32
+	rootSymbol                          Symbol
+	hasRootSymbol                       bool
+	hasRecoverState                     []bool
+	hasRecoverSymbol                    []bool
+	recoverByState                      [][]recoverSymbolAction
+	hasKeywordState                     []bool
+	forceRawSpanAll                     bool
+	forceRawSpanTable                   []bool
+	included                            []Range
+	logger                              ParserLogger
+	glrTrace                            bool // temporary: verbose GLR stack tracing
+	maxConflictWidth                    int  // widest N-way conflict in the parse table
+	timeoutMicros                       uint64
+	cancellationFlag                    *uint32
+	denseLimit                          int
+	smallBase                           int
+	smallLookup                         [][]smallActionPair
+	reduceAliasSeq                      [][]Symbol
+	reduceHasFields                     []bool
+	fieldInheritedScratch               []bool
+	fieldConflictedScratch              []bool
+	currentExternalTokenCheckpoint      externalScannerCheckpoint
+	currentExternalTokenCheckpointStart uint32
+	currentExternalTokenCheckpointEnd   uint32
+	currentExternalTokenCheckpointValid bool
 }
 
 var snippetParserPools sync.Map
@@ -897,6 +901,50 @@ func incrementalArenaClassForSource(source []byte) arenaClass {
 	return arenaClass
 }
 
+func (p *Parser) clearCurrentExternalTokenCheckpoint() {
+	if p == nil {
+		return
+	}
+	p.currentExternalTokenCheckpoint = externalScannerCheckpoint{}
+	p.currentExternalTokenCheckpointStart = 0
+	p.currentExternalTokenCheckpointEnd = 0
+	p.currentExternalTokenCheckpointValid = false
+}
+
+func (p *Parser) updateCurrentExternalTokenCheckpoint(ts TokenSource, tok Token) {
+	if p == nil {
+		return
+	}
+	p.clearCurrentExternalTokenCheckpoint()
+	cp, startByte, endByte, ok := currentExternalScannerCheckpoint(ts)
+	if !ok || tok.Missing || tok.NoLookahead || tok.Symbol == 0 {
+		return
+	}
+	if startByte != tok.StartByte || endByte != tok.EndByte {
+		return
+	}
+	p.currentExternalTokenCheckpoint = cp
+	p.currentExternalTokenCheckpointStart = startByte
+	p.currentExternalTokenCheckpointEnd = endByte
+	p.currentExternalTokenCheckpointValid = true
+}
+
+func (p *Parser) recordCurrentExternalLeafCheckpoint(node *Node, tok Token) {
+	if p == nil || node == nil || !p.currentExternalTokenCheckpointValid {
+		return
+	}
+	if tok.Missing || tok.NoLookahead || tok.Symbol == 0 {
+		return
+	}
+	if node.ownerArena == nil {
+		return
+	}
+	if node.StartByte() != p.currentExternalTokenCheckpointStart || node.EndByte() != p.currentExternalTokenCheckpointEnd {
+		return
+	}
+	node.ownerArena.recordExternalScannerLeafCheckpoint(node, p.currentExternalTokenCheckpoint.start, p.currentExternalTokenCheckpoint.end)
+}
+
 func canReuseUnchangedTree(source []byte, oldTree *Tree, lang *Language) bool {
 	if oldTree == nil || oldTree.language != lang || len(oldTree.edits) != 0 {
 		return false
@@ -949,6 +997,7 @@ func resolveParseMaxStacks(configuredMaxStacks, maxStacksOverride, conflictWidth
 // merged; distinct alternatives are preserved.
 func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor, oldTree *Tree, arenaClass arenaClass, timing *incrementalParseTiming, maxStacksOverride int, maxNodesOverride int, maxMergePerKeyOverride int, deterministicExternalConflicts bool) *Tree {
 	parseStart := time.Now()
+	p.clearCurrentExternalTokenCheckpoint()
 	if p.logger != nil {
 		p.logf(ParserLogParse, "start len=%d incremental=%t", len(source), reuse != nil || oldTree != nil)
 	}
@@ -1368,6 +1417,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 		// --- Token acquisition and incremental reuse ---
 		if needToken {
 			tok = ts.Next()
+			p.updateCurrentExternalTokenCheckpoint(ts, tok)
 			if p.logger != nil {
 				p.logf(ParserLogLex, "token sym=%d start=%d end=%d", tok.Symbol, tok.StartByte, tok.EndByte)
 			}
@@ -1468,6 +1518,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				leaf.isExtra = true
 				leaf.preGotoState = currentState
 				leaf.parseState = currentState
+				p.recordCurrentExternalLeafCheckpoint(leaf, tok)
 				p.pushStackNode(s, currentState, leaf, &scratch.entries, &scratch.gss)
 				nodeCount++
 				needToken = true

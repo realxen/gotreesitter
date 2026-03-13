@@ -62,12 +62,14 @@ type nodeArena struct {
 	nodeSlabs      []nodeSlab
 	nodeSlabCursor int
 
-	childSlabs            []childSliceSlab
-	fieldSlabs            []fieldSliceSlab
-	fieldSourceSlabs      []fieldSourceSliceSlab
-	childSlabCursor       int
-	fieldSlabCursor       int
-	fieldSourceSlabCursor int
+	childSlabs                         []childSliceSlab
+	fieldSlabs                         []fieldSliceSlab
+	fieldSourceSlabs                   []fieldSourceSliceSlab
+	externalScannerNodeCheckpoints     []externalScannerCheckpointRef
+	externalScannerNodeCheckpointSlabs []externalScannerCheckpointSlab
+	childSlabCursor                    int
+	fieldSlabCursor                    int
+	fieldSourceSlabCursor              int
 }
 
 type nodeSlab struct {
@@ -88,6 +90,10 @@ type fieldSliceSlab struct {
 type fieldSourceSliceSlab struct {
 	data []uint8
 	used int
+}
+
+type externalScannerCheckpointSlab struct {
+	data []externalScannerCheckpointRef
 }
 
 var (
@@ -258,6 +264,18 @@ func (a *nodeArena) reset() {
 	primaryUsed := min(a.used, len(a.nodes))
 	clear(a.nodes[:primaryUsed])
 	a.used = 0
+	if len(a.externalScannerNodeCheckpoints) > 0 && primaryUsed > 0 {
+		clear(a.externalScannerNodeCheckpoints[:min(primaryUsed, len(a.externalScannerNodeCheckpoints))])
+	}
+	for i := range a.externalScannerNodeCheckpointSlabs {
+		used := 0
+		if i < len(a.nodeSlabs) {
+			used = min(a.nodeSlabs[i].used, len(a.externalScannerNodeCheckpointSlabs[i].data))
+		}
+		if used > 0 {
+			clear(a.externalScannerNodeCheckpointSlabs[i].data[:used])
+		}
+	}
 	for i := range a.nodeSlabs {
 		slab := &a.nodeSlabs[i]
 		clear(slab.data[:slab.used])
@@ -282,6 +300,12 @@ func (a *nodeArena) reset() {
 			a.nodeSlabs[i] = nodeSlab{}
 		}
 		a.nodeSlabs = a.nodeSlabs[:keep]
+		if len(a.externalScannerNodeCheckpointSlabs) > keep {
+			for i := keep; i < len(a.externalScannerNodeCheckpointSlabs); i++ {
+				a.externalScannerNodeCheckpointSlabs[i] = externalScannerCheckpointSlab{}
+			}
+			a.externalScannerNodeCheckpointSlabs = a.externalScannerNodeCheckpointSlabs[:keep]
+		}
 	}
 	a.nodeSlabCursor = 0
 
@@ -374,6 +398,7 @@ func (a *nodeArena) reset() {
 
 	if len(a.nodes) > maxRetainedNodeCapacityForClass(a.class) {
 		a.nodes = make([]Node, nodeCapacityForClass(a.class))
+		a.externalScannerNodeCheckpoints = nil
 	}
 	if len(a.childSlabs) == 0 {
 		a.childSlabs = []childSliceSlab{{data: make([]*Node, defaultChildSliceCap(a.class))}}
@@ -453,6 +478,8 @@ func (a *nodeArena) ensureNodeCapacity(min int) {
 	a.used = 0
 	a.nodeSlabs = nil
 	a.nodeSlabCursor = 0
+	a.externalScannerNodeCheckpoints = nil
+	a.externalScannerNodeCheckpointSlabs = nil
 	a.recomputeAllocatedBytes()
 }
 
@@ -617,6 +644,13 @@ func fieldSourceSliceBytesForCap(n int) int64 {
 	return int64(n)
 }
 
+func externalScannerCheckpointBytesForCap(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return int64(n) * int64(unsafe.Sizeof(externalScannerCheckpointRef{}))
+}
+
 func (a *nodeArena) recomputeAllocatedBytes() {
 	if a == nil {
 		return
@@ -634,7 +668,65 @@ func (a *nodeArena) recomputeAllocatedBytes() {
 	for i := range a.fieldSourceSlabs {
 		total += fieldSourceSliceBytesForCap(len(a.fieldSourceSlabs[i].data))
 	}
+	total += externalScannerCheckpointBytesForCap(len(a.externalScannerNodeCheckpoints))
+	for i := range a.externalScannerNodeCheckpointSlabs {
+		total += externalScannerCheckpointBytesForCap(len(a.externalScannerNodeCheckpointSlabs[i].data))
+	}
 	a.allocatedBytes = total
+}
+
+func (a *nodeArena) allocExternalScannerSnapshotRef(src []byte) externalScannerSnapshotRef {
+	n := len(src)
+	if a == nil || n == 0 {
+		return externalScannerSnapshotRef{}
+	}
+
+	if len(a.fieldSourceSlabs) == 0 {
+		a.fieldSourceSlabs = append(a.fieldSourceSlabs, fieldSourceSliceSlab{data: make([]uint8, defaultFieldSliceCap(a.class))})
+		a.allocatedBytes += fieldSourceSliceBytesForCap(defaultFieldSliceCap(a.class))
+		a.fieldSourceSlabCursor = 0
+	}
+	if a.fieldSourceSlabCursor < 0 || a.fieldSourceSlabCursor >= len(a.fieldSourceSlabs) {
+		a.fieldSourceSlabCursor = 0
+	}
+
+	for i := a.fieldSourceSlabCursor; ; i++ {
+		if i >= len(a.fieldSourceSlabs) {
+			capacity := max(defaultFieldSliceCap(a.class), n)
+			a.fieldSourceSlabs = append(a.fieldSourceSlabs, fieldSourceSliceSlab{data: make([]uint8, capacity)})
+			a.allocatedBytes += fieldSourceSliceBytesForCap(capacity)
+		}
+
+		slab := &a.fieldSourceSlabs[i]
+		if len(slab.data)-slab.used < n {
+			continue
+		}
+		start := slab.used
+		slab.used += n
+		a.fieldSourceSlabCursor = i
+		copy(slab.data[start:slab.used], src)
+		return externalScannerSnapshotRef{
+			slab: uint16(i),
+			off:  uint32(start),
+			len:  uint16(n),
+		}
+	}
+}
+
+func (a *nodeArena) externalScannerSnapshotBytes(ref externalScannerSnapshotRef) []byte {
+	if a == nil || ref.len == 0 {
+		return nil
+	}
+	if int(ref.slab) >= len(a.fieldSourceSlabs) {
+		return nil
+	}
+	slab := a.fieldSourceSlabs[ref.slab].data
+	start := int(ref.off)
+	end := start + int(ref.len)
+	if start < 0 || end > len(slab) || start > end {
+		return nil
+	}
+	return slab[start:end]
 }
 
 func (a *nodeArena) clearBudget() {

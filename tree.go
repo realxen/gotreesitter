@@ -740,13 +740,15 @@ func NewTree(root *Node, source []byte, lang *Language) *Tree {
 }
 
 func newTreeWithArenas(root *Node, source []byte, lang *Language, arena *nodeArena, borrowed []*nodeArena) *Tree {
-	return &Tree{
+	tree := &Tree{
 		root:          root,
 		source:        source,
 		language:      lang,
 		arena:         arena,
 		borrowedArena: uniqueArenas(borrowed, arena),
 	}
+	rebuildExternalScannerCheckpoints(root, lang)
+	return tree
 }
 
 func uniqueArenas(arenas []*nodeArena, exclude *nodeArena) []*nodeArena {

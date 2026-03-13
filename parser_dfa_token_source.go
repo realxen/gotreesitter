@@ -1,6 +1,7 @@
 package gotreesitter
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,15 +13,21 @@ type dfaTokenSource struct {
 	language *Language
 	state    StateID
 
-	lookupActionIndex  func(state StateID, sym Symbol) uint16
-	hasKeywordState    []bool
-	externalPayload    any
-	externalValid      []bool
-	externalSnapshot   []byte
-	externalRetrySnap  []byte
-	externalLexer      ExternalLexer
-	externalRetryLexer ExternalLexer
-	glrStates          []StateID // all active GLR stack states
+	lookupActionIndex          func(state StateID, sym Symbol) uint16
+	hasKeywordState            []bool
+	externalPayload            any
+	externalValid              []bool
+	externalSnapshot           []byte
+	externalRetrySnap          []byte
+	externalTokenStart         []byte
+	externalTokenEnd           []byte
+	externalCompare            []byte
+	externalLexer              ExternalLexer
+	externalRetryLexer         ExternalLexer
+	lastExternalTokenStartByte uint32
+	lastExternalTokenEndByte   uint32
+	lastExternalTokenValid     bool
+	glrStates                  []StateID // all active GLR stack states
 
 	// Zero-width external token loop prevention.
 	// Tracks which external token indices have been produced as zero-width
@@ -98,6 +105,9 @@ func (d *dfaTokenSource) Reset(source []byte) {
 	d.extZeroState = 0
 	d.zeroWidthPos = -1
 	d.zeroWidthCount = 0
+	d.lastExternalTokenStartByte = 0
+	d.lastExternalTokenEndByte = 0
+	d.lastExternalTokenValid = false
 	if d.language == nil || d.language.ExternalScanner == nil {
 		return
 	}
@@ -119,6 +129,9 @@ func (d *dfaTokenSource) Close() {
 		d.extZeroState = 0
 		d.zeroWidthPos = -1
 		d.zeroWidthCount = 0
+		d.lastExternalTokenStartByte = 0
+		d.lastExternalTokenEndByte = 0
+		d.lastExternalTokenValid = false
 		dfaTokenSourcePool.Put(d)
 		return
 	}
@@ -133,6 +146,9 @@ func (d *dfaTokenSource) Close() {
 	d.extZeroState = 0
 	d.zeroWidthPos = -1
 	d.zeroWidthCount = 0
+	d.lastExternalTokenStartByte = 0
+	d.lastExternalTokenEndByte = 0
+	d.lastExternalTokenValid = false
 	dfaTokenSourcePool.Put(d)
 }
 
@@ -147,8 +163,13 @@ func (d *dfaTokenSource) Next() Token {
 		startPos = d.lexer.pos
 	}
 	for {
+		var externalStartSnapshot []byte
+		if languageUsesExternalScannerCheckpoints(d.language) {
+			externalStartSnapshot = d.captureExternalScannerStateInto(&d.externalTokenStart)
+		}
 		if d.shouldForceEOFLookahead() {
 			tok := d.syntheticEOFLookaheadToken()
+			d.lastExternalTokenValid = false
 			if DebugDFA.Load() {
 				fmt.Printf("  SYN tok %d  %d %d state=%d\n", tok.Symbol, tok.StartByte, tok.EndByte, d.state)
 			}
@@ -235,6 +256,22 @@ func (d *dfaTokenSource) Next() Token {
 				prefix = "EXT"
 			}
 			fmt.Printf("  %s tok %d %s %d %d %s state=%d\n", prefix, tok.Symbol, name, tok.StartByte, tok.EndByte, tok.Text, d.state)
+		}
+		if languageUsesExternalScannerCheckpoints(d.language) && tok.Symbol != 0 && !tok.NoLookahead {
+			d.captureExternalScannerStateInto(&d.externalTokenEnd)
+			d.lastExternalTokenStartByte = tok.StartByte
+			d.lastExternalTokenEndByte = tok.EndByte
+			d.lastExternalTokenValid = true
+			// Keep start/end snapshots in the token source until the parser
+			// either records them on a shifted leaf or advances to the next token.
+			if len(externalStartSnapshot) == 0 {
+				d.externalTokenStart = d.externalTokenStart[:0]
+			}
+			if len(d.externalTokenEnd) == 0 {
+				d.externalTokenEnd = d.externalTokenEnd[:0]
+			}
+		} else {
+			d.lastExternalTokenValid = false
 		}
 		return tok
 	}
@@ -994,6 +1031,24 @@ func (d *dfaTokenSource) restoreExternalScannerState(snapshot []byte) {
 		return
 	}
 	d.language.ExternalScanner.Deserialize(d.externalPayload, snapshot)
+}
+
+func (d *dfaTokenSource) lastExternalScannerCheckpoint() (externalScannerCheckpoint, uint32, uint32, bool) {
+	if d == nil || !d.lastExternalTokenValid {
+		return externalScannerCheckpoint{}, 0, 0, false
+	}
+	return externalScannerCheckpoint{
+		start: d.externalTokenStart,
+		end:   d.externalTokenEnd,
+	}, d.lastExternalTokenStartByte, d.lastExternalTokenEndByte, true
+}
+
+func (d *dfaTokenSource) externalScannerStateMatches(snapshot []byte) bool {
+	if d == nil {
+		return len(snapshot) == 0
+	}
+	current := d.captureExternalScannerStateInto(&d.externalCompare)
+	return bytes.Equal(current, snapshot)
 }
 
 func (d *dfaTokenSource) externalSymbolIndex(sym Symbol) int {

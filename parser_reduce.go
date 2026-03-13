@@ -200,6 +200,7 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		}
 		leaf.preGotoState = s.top().state
 		leaf.parseState = targetState
+		p.recordCurrentExternalLeafCheckpoint(leaf, tok)
 		p.pushStackNode(s, targetState, leaf, entryScratch, gssScratch)
 		s.shifted = true
 		*nodeCount++

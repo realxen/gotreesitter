@@ -239,7 +239,11 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 		if !ok {
 			continue
 		}
-		return reuseNode(p, s, n, nextState, lookahead, ts, idx, entryScratch, gssScratch)
+		cp, ok := canReuseNodeWithExternalScannerCheckpoint(ts, state, n)
+		if !ok {
+			continue
+		}
+		return reuseNode(p, s, n, nextState, state, lookahead, ts, idx, entryScratch, gssScratch, cp)
 	}
 
 	// Conservative fallback: try small non-root non-leaf nodes. This increases
@@ -266,13 +270,18 @@ func (p *Parser) tryReuseSubtree(s *glrStack, lookahead Token, ts TokenSource, i
 				continue
 			}
 		}
-		return reuseNode(p, s, n, nextState, lookahead, ts, idx, entryScratch, gssScratch)
+		startState := s.top().state
+		cp, ok := canReuseNodeWithExternalScannerCheckpoint(ts, startState, n)
+		if !ok {
+			continue
+		}
+		return reuseNode(p, s, n, nextState, startState, lookahead, ts, idx, entryScratch, gssScratch, cp)
 	}
 
 	return lookahead, 0, false
 }
 
-func reuseNode(p *Parser, s *glrStack, n *Node, nextState StateID, lookahead Token, ts TokenSource, idx *reuseCursor, entryScratch *glrEntryScratch, gssScratch *gssScratch) (Token, uint32, bool) {
+func reuseNode(p *Parser, s *glrStack, n *Node, nextState StateID, startState StateID, lookahead Token, ts TokenSource, idx *reuseCursor, entryScratch *glrEntryScratch, gssScratch *gssScratch, checkpoint externalScannerCheckpointRef) (Token, uint32, bool) {
 	if perfCountersEnabled {
 		perfRecordReuseSuccess()
 		if n.ChildCount() == 0 {
@@ -298,15 +307,37 @@ func reuseNode(p *Parser, s *glrStack, n *Node, nextState StateID, lookahead Tok
 	}
 
 	// dfaTokenSource fast skip does not preserve external-scanner state.
-	// Advance token-by-token in that case to keep scanner payload in sync.
-	if dts, ok := ts.(*dfaTokenSource); ok && dts.language != nil && dts.language.ExternalScanner != nil {
+	// For checkpointed scanner languages, only reuse nodes when the start
+	// parser/scanner state matches exactly, then restore the recorded end
+	// snapshot before skipping to the node end.
+	if dts := underlyingDFATokenSource(ts); dts != nil && dts.language != nil && dts.language.ExternalScanner != nil {
+		if languageUsesExternalScannerCheckpoints(dts.language) {
+			if stateful, ok := ts.(parserStateTokenSource); ok {
+				stateful.SetParserState(nextState)
+				stateful.SetGLRStates(nil)
+			}
+			if startState != n.PreGotoState() {
+				return lookahead, 0, false
+			}
+			if tok, ok := fastForwardWithExternalScannerCheckpoint(ts, n, checkpoint); ok {
+				return tok, reusedBytes, true
+			}
+		}
 		return advanceTokenSourceTo(ts, lookahead, n.EndByte()), reusedBytes, true
 	}
 
 	if skipper, ok := ts.(PointSkippableTokenSource); ok {
+		if stateful, ok := ts.(parserStateTokenSource); ok {
+			stateful.SetParserState(nextState)
+			stateful.SetGLRStates(nil)
+		}
 		return skipper.SkipToByteWithPoint(n.EndByte(), n.EndPoint()), reusedBytes, true
 	}
 	if skipper, ok := ts.(ByteSkippableTokenSource); ok {
+		if stateful, ok := ts.(parserStateTokenSource); ok {
+			stateful.SetParserState(nextState)
+			stateful.SetGLRStates(nil)
+		}
 		return skipper.SkipToByte(n.EndByte()), reusedBytes, true
 	}
 

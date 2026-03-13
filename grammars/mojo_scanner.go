@@ -45,6 +45,8 @@ func (MojoExternalScanner) Deserialize(payload any, buf []byte) {
 	PythonExternalScanner{}.Deserialize(payload, buf)
 }
 
+func (MojoExternalScanner) SupportsIncrementalReuse() bool { return true }
+
 func (MojoExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 	s := payload.(*pythonScannerState)
 	if len(s.indents) == 0 {
