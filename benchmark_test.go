@@ -248,6 +248,10 @@ func BenchmarkGoParseFullDFA(b *testing.B) {
 			"STATS_PARSE nodes_new=%d children_ptrs=%d extras=%d errors=%d reuse_bytes=%d max_stacks=%d\n",
 			lastRuntime.NodesAllocated, p.ParentChildPointers, p.ExtraNodes, p.ErrorNodes, p.ReuseNonLeafBytes, lastRuntime.MaxStacksSeen,
 		)
+		fmt.Printf(
+			"STATS_RUNTIME single_iters=%d multi_iters=%d single_tokens=%d multi_tokens=%d gss_single=%d gss_multi=%d\n",
+			lastRuntime.SingleStackIterations, lastRuntime.MultiStackIterations, lastRuntime.SingleStackTokens, lastRuntime.MultiStackTokens, lastRuntime.SingleStackGSSNodes, lastRuntime.MultiStackGSSNodes,
+		)
 	}
 }
 
@@ -333,6 +337,12 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 	var recoverHits uint64
 	var entryScratchPeak uint64
 	maxStacksSeen := 0
+	singleStackIterations := 0
+	multiStackIterations := 0
+	var singleStackTokens uint64
+	var multiStackTokens uint64
+	var singleStackGSSNodes uint64
+	var multiStackGSSNodes uint64
 
 	editAt := bytes.Index(src, []byte("v := 0"))
 	if editAt < 0 {
@@ -390,6 +400,12 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 			recoverSymbolSkips += prof.RecoverSymbolSkips
 			recoverLookups += prof.RecoverLookups
 			recoverHits += prof.RecoverHits
+			singleStackIterations += prof.SingleStackIterations
+			multiStackIterations += prof.MultiStackIterations
+			singleStackTokens += prof.SingleStackTokens
+			multiStackTokens += prof.MultiStackTokens
+			singleStackGSSNodes += prof.SingleStackGSSNodes
+			multiStackGSSNodes += prof.MultiStackGSSNodes
 			if prof.EntryScratchPeak > entryScratchPeak {
 				entryScratchPeak = prof.EntryScratchPeak
 			}
@@ -448,6 +464,10 @@ func BenchmarkGoParseIncrementalSingleByteEditDFA(b *testing.B) {
 		fmt.Printf(
 			"STATS_PERF merge_in_hist=%s merge_alive_hist=%s merge_out_hist=%s fork_actions_hist=%s\n",
 			nonZeroBins(p.MergeStacksInHist[:]), nonZeroBins(p.MergeAliveHist[:]), nonZeroBins(p.MergeOutHist[:]), nonZeroBins(p.ForkActionsHist[:]),
+		)
+		fmt.Printf(
+			"STATS_RUNTIME single_iters=%d multi_iters=%d single_tokens=%d multi_tokens=%d gss_single=%d gss_multi=%d\n",
+			singleStackIterations, multiStackIterations, singleStackTokens, multiStackTokens, singleStackGSSNodes, multiStackGSSNodes,
 		)
 	}
 	tree.Release()
