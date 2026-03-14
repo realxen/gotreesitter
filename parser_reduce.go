@@ -194,11 +194,9 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		if leaf.isExtra && perfCountersEnabled {
 			perfRecordExtraNode()
 		}
-		targetState := act.State
-		if leaf.isExtra {
-			targetState = s.top().state
-		}
-		leaf.preGotoState = s.top().state
+		currentState := s.top().state
+		targetState := extraShiftTargetState(currentState, act)
+		leaf.preGotoState = currentState
 		leaf.parseState = targetState
 		p.recordCurrentExternalLeafCheckpoint(leaf, tok)
 		p.pushStackNode(s, targetState, leaf, entryScratch, gssScratch)
@@ -258,6 +256,13 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 			fmt.Printf("      -> RECOVER state=%d depth=%d\n", s.top().state, s.depth())
 		}
 	}
+}
+
+func extraShiftTargetState(current StateID, act ParseAction) StateID {
+	if !act.Extra || act.State != 0 {
+		return act.State
+	}
+	return current
 }
 
 func (p *Parser) pushStackNode(s *glrStack, state StateID, node *Node, entryScratch *glrEntryScratch, gssScratch *gssScratch) {
