@@ -1,6 +1,7 @@
 package grammargen
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -111,19 +112,28 @@ type LRTables struct {
 
 // buildLRTables constructs LR(1) parse tables from a normalized grammar.
 func buildLRTables(ng *NormalizedGrammar) (*LRTables, error) {
-	tables, _, err := buildLRTablesInternal(ng, false)
+	tables, _, err := buildLRTablesInternal(context.Background(), ng, false)
 	return tables, err
 }
 
 // buildLRTablesWithProvenance constructs LR(1) parse tables and returns
 // the merge provenance alongside the tables for diagnostic use.
 func buildLRTablesWithProvenance(ng *NormalizedGrammar) (*LRTables, *lrContext, error) {
-	return buildLRTablesInternal(ng, true)
+	return buildLRTablesInternal(context.Background(), ng, true)
 }
 
-func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTables, *lrContext, error) {
+// buildLRTablesWithProvenanceCtx is like buildLRTablesWithProvenance but
+// accepts a context for cancellation of the LR build. When the context is
+// cancelled, the LR item set construction loop aborts promptly, allowing
+// the goroutine to release multi-GB builder state.
+func buildLRTablesWithProvenanceCtx(bgCtx context.Context, ng *NormalizedGrammar) (*LRTables, *lrContext, error) {
+	return buildLRTablesInternal(bgCtx, ng, true)
+}
+
+func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackProvenance bool) (*LRTables, *lrContext, error) {
 	newCtx := func() *lrContext {
 		ctx := &lrContext{
+			bgCtx:           bgCtx,
 			ng:              ng,
 			firstSets:       make([]bitset, len(ng.Symbols)),
 			nullables:       make([]bool, len(ng.Symbols)),
@@ -354,6 +364,13 @@ func buildLRTablesInternal(ng *NormalizedGrammar, trackProvenance bool) (*LRTabl
 			itemSets = ctx.buildItemSetsLALR()
 		}
 	}
+	// Check for context cancellation after item set construction. If the
+	// context was cancelled mid-build, return immediately so the goroutine
+	// can release LR builder memory.
+	if err := bgCtx.Err(); err != nil {
+		return nil, ctx, fmt.Errorf("build LR tables: %w", err)
+	}
+
 	const maxRuntimeStateID = int(^uint16(0))
 	if len(itemSets) > maxRuntimeStateID {
 		return nil, ctx, fmt.Errorf("parser state count %d exceeds max representable state id %d", len(itemSets), maxRuntimeStateID)
@@ -524,6 +541,7 @@ func (t *LRTables) addAction(state, sym int, action lrAction) {
 
 // lrContext holds state during LR table construction.
 type lrContext struct {
+	bgCtx      context.Context // cancellation context for long-running LR builds
 	ng         *NormalizedGrammar
 	tokenCount int
 	firstSets  []bitset // symbol → bitset of terminal first symbols
@@ -2009,8 +2027,19 @@ func (ctx *lrContext) buildItemSets() []lrItemSet {
 
 	worklist := []int{0}
 	inWorklist := map[int]bool{0: true}
+	worklistIter := 0
 
 	for len(worklist) > 0 {
+		// Check for cancellation periodically (every 64 iterations) to avoid
+		// the overhead of a channel receive on every loop pass.
+		worklistIter++
+		if worklistIter&63 == 0 {
+			select {
+			case <-ctx.bgCtx.Done():
+				return ctx.itemSets
+			default:
+			}
+		}
 		stateIdx := worklist[0]
 		worklist = worklist[1:]
 		inWorklist[stateIdx] = false

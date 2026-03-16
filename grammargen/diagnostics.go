@@ -1,6 +1,7 @@
 package grammargen
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -550,6 +551,177 @@ func GenerateWithReport(g *Grammar) (*GenerateReport, error) {
 		includeLanguage: true,
 		includeBlob:     true,
 	})
+}
+
+// generateWithReportCtx is like generateWithReport but threads a context
+// through LR table construction for cancellation support. When the context
+// is cancelled, the LR builder aborts promptly and returns an error.
+func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOptions) (*GenerateReport, error) {
+	report := &GenerateReport{}
+
+	report.Warnings = Validate(g)
+
+	ng, err := Normalize(g)
+	if err != nil {
+		return nil, fmt.Errorf("normalize: %w", err)
+	}
+
+	tables, lrCtx, err := buildLRTablesWithProvenanceCtx(bgCtx, ng)
+	if err != nil {
+		return nil, fmt.Errorf("build LR tables: %w", err)
+	}
+	prov := lrCtx.provenance
+
+	diags, err := resolveConflictsWithDiag(tables, ng, prov)
+	if err != nil {
+		return nil, fmt.Errorf("resolve conflicts: %w", err)
+	}
+	report.Conflicts = diags
+
+	oracle := newSplitOracle(diags, prov)
+	report.SplitCandidates = oracle.candidates()
+
+	if len(report.SplitCandidates) > 0 && g.EnableLRSplitting {
+		glrBefore := 0
+		for _, d := range diags {
+			if d.Resolution == "GLR (multiple actions kept)" {
+				glrBefore++
+			}
+		}
+
+		sr := &splitReport{CandidatesFound: len(report.SplitCandidates)}
+		sr.ConflictsBefore = len(diags)
+		statesBefore := tables.StateCount
+		splitCount, splitErr := localLR1Rebuild(tables, ng, lrCtx, report.SplitCandidates, 200)
+		sr.StatesSplit = splitCount
+		sr.NewStatesAdded = tables.StateCount - statesBefore
+		sr.Error = splitErr
+
+		diagsAfter, _ := resolveConflictsWithDiag(tables, ng, prov)
+		sr.ConflictsAfter = len(diagsAfter)
+
+		glrAfter := 0
+		for _, d := range diagsAfter {
+			if d.Resolution == "GLR (multiple actions kept)" {
+				glrAfter++
+			}
+		}
+		sr.GLRBefore = glrBefore
+		sr.GLRAfter = glrAfter
+
+		if glrAfter >= glrBefore && len(diagsAfter) >= len(diags) {
+			tables, err = buildLRTables(ng)
+			if err != nil {
+				return nil, fmt.Errorf("rebuild LR tables after split rollback: %w", err)
+			}
+			if err := resolveConflicts(tables, ng); err != nil {
+				return nil, fmt.Errorf("resolve conflicts after split rollback: %w", err)
+			}
+			sr.StatesSplit = 0
+			sr.NewStatesAdded = 0
+			sr.ConflictsAfter = sr.ConflictsBefore
+			sr.Error = fmt.Errorf("rollback: conflicts %d -> %d, GLR conflicts %d -> %d (not reduced)",
+				len(diags), len(diagsAfter), glrBefore, glrAfter)
+		} else {
+			report.Conflicts = diagsAfter
+			oracleAfter := newSplitOracle(diagsAfter, prov)
+			report.SplitCandidates = oracleAfter.candidates()
+		}
+		report.SplitResult = sr
+	}
+
+	addNonterminalExtraChains(tables, ng, lrCtx)
+
+	lrCtx.releaseScratch()
+	prov = nil
+	lrCtx = nil
+
+	report.SymbolCount = len(ng.Symbols)
+	report.StateCount = tables.StateCount + 1
+	report.TokenCount = ng.TokenCount()
+
+	if !opts.includeLanguage {
+		return report, nil
+	}
+
+	tokenCount := ng.TokenCount()
+	immediateTokens := make(map[int]bool)
+	for _, t := range ng.Terminals {
+		if t.Immediate {
+			immediateTokens[t.SymbolID] = true
+		}
+	}
+
+	keywordSet := make(map[int]bool, len(ng.KeywordSymbols))
+	for _, ks := range ng.KeywordSymbols {
+		keywordSet[ks] = true
+	}
+	stringPrefixExtensions := computeStringPrefixExtensions(ng.Terminals)
+	lexModes, stateToMode := computeLexModes(
+		tables.StateCount,
+		tokenCount,
+		func(state, sym int) bool {
+			if acts, ok := tables.ActionTable[state]; ok {
+				if entry, ok := acts[sym]; ok && len(entry) > 0 {
+					return true
+				}
+			}
+			return false
+		},
+		stringPrefixExtensions,
+		ng.ExtraSymbols,
+		tables.ExtraChainStateStart,
+		immediateTokens,
+		ng.ExternalSymbols,
+		ng.WordSymbolID,
+		keywordSet,
+	)
+
+	skipExtras := computeSkipExtras(ng)
+	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
+	if err != nil {
+		return nil, fmt.Errorf("build lex DFA: %w", err)
+	}
+
+	var keywordLexStates []gotreesitter.LexState
+	if len(ng.KeywordEntries) > 0 {
+		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, nil, []lexModeSpec{{
+			validSymbols:   allSymbolsSet(ng.KeywordEntries),
+			skipWhitespace: false,
+		}})
+		if err != nil {
+			return nil, fmt.Errorf("build keyword DFA: %w", err)
+		}
+		keywordLexStates = kls
+	}
+
+	lang, err := assemble(ng, tables, lexStates, stateToMode, lexModeOffsets)
+	if err != nil {
+		return nil, fmt.Errorf("assemble: %w", err)
+	}
+	lang.Name = g.Name
+
+	if len(keywordLexStates) > 0 {
+		lang.KeywordLexStates = keywordLexStates
+		lang.KeywordCaptureToken = gotreesitter.Symbol(ng.WordSymbolID)
+	}
+
+	report.Language = lang
+	report.SymbolCount = int(lang.SymbolCount)
+	report.StateCount = int(lang.StateCount)
+	report.TokenCount = int(lang.TokenCount)
+
+	if !opts.includeBlob {
+		return report, nil
+	}
+
+	blob, err := encodeLanguageBlob(lang)
+	if err != nil {
+		return nil, fmt.Errorf("encode: %w", err)
+	}
+	report.Blob = blob
+
+	return report, nil
 }
 
 // generateDiagnosticsReport runs the report pipeline but skips lex/assemble/blob

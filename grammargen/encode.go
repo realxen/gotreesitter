@@ -3,6 +3,7 @@ package grammargen
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/gob"
 	"fmt"
 
@@ -25,7 +26,15 @@ func Generate(g *Grammar) ([]byte, error) {
 // LR(1) state splitting is always attempted; a rollback guard reverts to the
 // plain LALR table if splitting does not reduce GLR conflicts.
 func GenerateLanguage(g *Grammar) (*gotreesitter.Language, error) {
-	report, err := generateWithReport(g, reportBuildOptions{includeLanguage: true})
+	return GenerateLanguageWithContext(context.Background(), g)
+}
+
+// GenerateLanguageWithContext is like GenerateLanguage but accepts a context
+// for cancellation. When the context is cancelled, LR table construction and
+// DFA building abort promptly, allowing the caller to reclaim memory that
+// would otherwise be held by an orphaned goroutine.
+func GenerateLanguageWithContext(ctx context.Context, g *Grammar) (*gotreesitter.Language, error) {
+	report, err := generateWithReportCtx(ctx, g, reportBuildOptions{includeLanguage: true})
 	if err != nil {
 		return nil, err
 	}

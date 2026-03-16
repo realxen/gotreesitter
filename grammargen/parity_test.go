@@ -22,6 +22,7 @@ package grammargen
 //          grammar.js files.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -1868,26 +1869,18 @@ func init() {
 	}
 }
 
-// generateWithTimeout runs GenerateLanguage with a deadline. Returns nil, err
-// if the generation exceeds the timeout (e.g., LR table construction hangs).
-// On timeout, a background goroutine drains the result to prevent leaked
-// goroutines from holding large LR/DFA tables in memory.
+// generateWithTimeout runs GenerateLanguageWithContext with a deadline. When
+// the timeout fires, the context is cancelled, causing the LR builder to abort
+// promptly and release its memory (item sets, action tables, DFA scratch).
+// This prevents timed-out grammars from accumulating multi-GB leaked goroutines.
 func generateWithTimeout(gram *Grammar, timeout time.Duration) (*gotreesitter.Language, error) {
-	type result struct {
-		lang *gotreesitter.Language
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		lang, err := GenerateLanguage(gram)
-		ch <- result{lang, err}
-	}()
-	select {
-	case r := <-ch:
-		return r.lang, r.err
-	case <-time.After(timeout):
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	lang, err := GenerateLanguageWithContext(ctx, gram)
+	if err != nil && ctx.Err() != nil {
 		return nil, fmt.Errorf("generation timed out after %v", timeout)
 	}
+	return lang, err
 }
 
 func TestMultiGrammarImportPipeline(t *testing.T) {

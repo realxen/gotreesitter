@@ -54,6 +54,14 @@ func (ctx *lrContext) buildLR0() {
 
 	// BFS through states.
 	for stateIdx := 0; stateIdx < len(ctx.itemSets); stateIdx++ {
+		// Check for cancellation periodically (every 64 iterations).
+		if stateIdx&63 == 0 {
+			select {
+			case <-ctx.bgCtx.Done():
+				return
+			default:
+			}
+		}
 		itemSet := &ctx.itemSets[stateIdx]
 
 		// Collect all symbols after the dot.
