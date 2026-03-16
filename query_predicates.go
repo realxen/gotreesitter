@@ -1,6 +1,10 @@
 package gotreesitter
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 func (q *Query) matchesPredicates(predicates []QueryPredicate, captures []QueryCapture, lang *Language, source []byte) bool {
 	if len(predicates) == 0 {
@@ -229,6 +233,42 @@ func (q *Query) matchesPredicates(predicates []QueryPredicate, captures []QueryC
 
 		case predicateIsNot:
 			if predicateIsSatisfied(pred, captures) {
+				return false
+			}
+
+		case predicateCount:
+			count := 0
+			for _, c := range captures {
+				if c.Name == pred.leftCapture && c.Node != nil {
+					count++
+				}
+			}
+			var ok bool
+			switch pred.countOp {
+			case ">":
+				ok = count > pred.countValue
+			case "<":
+				ok = count < pred.countValue
+			case ">=":
+				ok = count >= pred.countValue
+			case "<=":
+				ok = count <= pred.countValue
+			case "==":
+				ok = count == pred.countValue
+			case "!=":
+				ok = count != pred.countValue
+			}
+			if !ok {
+				return false
+			}
+
+		case predicateIsExported:
+			text, ok := captureText(pred.leftCapture, captures, source)
+			if !ok || text == "" {
+				return false
+			}
+			r, _ := utf8.DecodeRuneInString(text)
+			if r == utf8.RuneError || !unicode.IsUpper(r) {
 				return false
 			}
 

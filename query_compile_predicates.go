@@ -630,6 +630,75 @@ func (p *queryParser) parsePredicate() (QueryPredicate, error) {
 			regex:       rx,
 		}, nil
 
+	case "#count?":
+		p.skipWhitespaceAndComments()
+		capName, capKind, err := p.readPredicateToken()
+		if err != nil {
+			return QueryPredicate{}, err
+		}
+		if capKind != predicateArgCapture {
+			return QueryPredicate{}, fmt.Errorf("query: #count? first argument must be a capture")
+		}
+
+		p.skipWhitespaceAndComments()
+		op, opKind, err := p.readPredicateToken()
+		if err != nil {
+			return QueryPredicate{}, err
+		}
+		if opKind == predicateArgCapture {
+			return QueryPredicate{}, fmt.Errorf("query: #count? operator must be a string or atom, not a capture")
+		}
+		switch op {
+		case ">", "<", ">=", "<=", "==", "!=":
+			// valid
+		default:
+			return QueryPredicate{}, fmt.Errorf("query: #count? invalid operator %q (expected >, <, >=, <=, ==, !=)", op)
+		}
+
+		p.skipWhitespaceAndComments()
+		valStr, valKind, err := p.readPredicateToken()
+		if err != nil {
+			return QueryPredicate{}, err
+		}
+		if valKind == predicateArgCapture {
+			return QueryPredicate{}, fmt.Errorf("query: #count? value must be a string or atom, not a capture")
+		}
+		val, convErr := strconv.Atoi(valStr)
+		if convErr != nil {
+			return QueryPredicate{}, fmt.Errorf("query: #count? invalid integer %q", valStr)
+		}
+
+		p.skipWhitespaceAndComments()
+		if p.pos >= len(p.input) || p.input[p.pos] != ')' {
+			return QueryPredicate{}, fmt.Errorf("query: expected ')' to close predicate at position %d", p.pos)
+		}
+		p.pos++ // consume ')'
+		return QueryPredicate{
+			kind:        predicateCount,
+			leftCapture: capName,
+			countOp:     op,
+			countValue:  val,
+		}, nil
+
+	case "#is-exported?":
+		p.skipWhitespaceAndComments()
+		capName, capIsCapture, err := p.readPredicateArg()
+		if err != nil {
+			return QueryPredicate{}, err
+		}
+		if !capIsCapture {
+			return QueryPredicate{}, fmt.Errorf("query: #is-exported? argument must be a capture")
+		}
+		p.skipWhitespaceAndComments()
+		if p.pos >= len(p.input) || p.input[p.pos] != ')' {
+			return QueryPredicate{}, fmt.Errorf("query: expected ')' to close predicate at position %d", p.pos)
+		}
+		p.pos++ // consume ')'
+		return QueryPredicate{
+			kind:        predicateIsExported,
+			leftCapture: capName,
+		}, nil
+
 	default:
 		return QueryPredicate{}, fmt.Errorf("query: unsupported predicate %q", name)
 	}

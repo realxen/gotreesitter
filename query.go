@@ -85,6 +85,8 @@ const (
 	predicateAnyNotMatch
 	predicateSelectAdjacent
 	predicateStrip
+	predicateCount      // #count? @cap op value
+	predicateIsExported // #is-exported? @cap
 )
 
 // QueryPredicate is a post-match constraint attached to a pattern.
@@ -117,7 +119,9 @@ type QueryPredicate struct {
 	literal  string // literal or regex source
 	values   []string
 	regex    *regexp.Regexp
-	offset   [4]int // #offset! start_row start_col end_row end_col
+	offset     [4]int // #offset! start_row start_col end_row end_col
+	countOp    string // for #count?: ">", "<", ">=", "<=", "==", "!="
+	countValue int    // for #count?
 }
 
 // alternativeSymbol is one branch of an alternation like [(true) (false)].
