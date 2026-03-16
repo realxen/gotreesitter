@@ -47,6 +47,7 @@ type Parser struct {
 	smallLookup                         [][]smallActionPair
 	smallTokenLookup                    [][]uint16
 	reduceAliasSeq                      [][]Symbol
+	aliasTargetSymbol                   []bool
 	reduceHasFields                     []bool
 	fieldInheritedScratch               []bool
 	fieldConflictedScratch              []bool
@@ -226,6 +227,7 @@ func NewParser(lang *Language) *Parser {
 			p.smallTokenLookup = buildSmallTokenLookup(lang)
 		}
 		p.reduceAliasSeq = buildReduceAliasSequences(lang)
+		p.aliasTargetSymbol = buildAliasTargetSymbols(lang)
 		p.reduceHasFields = buildReduceFieldPresence(lang)
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
 		p.hasKeywordState = buildKeywordStates(lang)
@@ -1110,11 +1112,6 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 			p.recordIncrementalArenaUsage(arena.used)
 			p.recordIncrementalGSSUsage(scratch.gss.usedTotal)
 		}()
-	} else {
-		defer func() {
-			p.recordIncrementalArenaUsage(arena.used)
-			p.recordIncrementalGSSUsage(scratch.gss.usedTotal)
-		}()
 	}
 	switch arenaClass {
 	case arenaClassFull:
@@ -1655,9 +1652,9 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 				leaf.isExtra = true
 				leaf.preGotoState = currentState
-				leaf.parseState = currentState
+				leaf.parseState = extraShiftTargetState(currentState, actions[0])
 				p.recordCurrentExternalLeafCheckpoint(leaf, tok)
-				p.pushStackNode(s, currentState, leaf, &scratch.entries, &scratch.gss)
+				p.pushStackNode(s, leaf.parseState, leaf, &scratch.entries, &scratch.gss)
 				nodeCount++
 				needToken = true
 				continue

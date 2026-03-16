@@ -518,6 +518,47 @@ func TestMergeKeyGroupsEquivalentStacks(t *testing.T) {
 	// stackEquivalent still rejects them.
 }
 
+func TestStackEquivalentForAliasLanguageRejectsDeepAliasMismatch(t *testing.T) {
+	lang := &Language{
+		Name:        "go",
+		SymbolCount: 16,
+		SymbolNames: make([]string, 16),
+		AliasSequences: [][]Symbol{
+			{0, 12},
+		},
+	}
+	buildDeepNode := func(leafSym Symbol) *Node {
+		leaf := &Node{symbol: leafSym, startByte: 0, endByte: 5, isNamed: true}
+		n := leaf
+		for sym := Symbol(11); sym >= 4; sym-- {
+			n = &Node{
+				symbol:    sym,
+				startByte: 0,
+				endByte:   5,
+				isNamed:   true,
+				children:  []*Node{n},
+			}
+			if sym == 4 {
+				break
+			}
+		}
+		return &Node{
+			symbol:    3,
+			startByte: 0,
+			endByte:   5,
+			isNamed:   true,
+			children:  []*Node{n},
+		}
+	}
+
+	a := glrStack{entries: []stackEntry{{state: 1}, {state: 2, node: buildDeepNode(10)}}, byteOffset: 5}
+	b := glrStack{entries: []stackEntry{{state: 1}, {state: 2, node: buildDeepNode(12)}}, byteOffset: 5}
+
+	if stackEquivalentForLanguage(lang, a, b) {
+		t.Fatal("expected deep alias mismatch to remain distinct for alias language")
+	}
+}
+
 func TestMergeStacksAllDeadReturnsEmpty(t *testing.T) {
 	s1 := newGLRStack(StateID(1))
 	s2 := newGLRStack(StateID(2))

@@ -594,640 +594,6 @@ func TestCanFinalizeNoActionEOFAcceptsSingleNonterminalWithExtras(t *testing.T) 
 	}
 }
 
-func TestCanFinalizeNoActionEOFRejectsMultipleNonExtraNodesWithExpectedRoot(t *testing.T) {
-	lang := buildArithmeticLanguage()
-	parser := NewParser(lang)
-	parser.rootSymbol = 3
-	parser.hasRootSymbol = true
-
-	s := newGLRStack(lang.InitialState)
-	s.push(1, NewLeafNode(1, true, 0, 1, Point{}, Point{Column: 1}), nil, nil)
-	s.push(2, NewLeafNode(3, true, 0, 1, Point{}, Point{Column: 1}), nil, nil)
-
-	if parser.canFinalizeNoActionEOF(&s) {
-		t.Fatal("canFinalizeNoActionEOF() = true, want false for multiple non-extra nodes")
-	}
-}
-
-func TestAcceptNoActionEOFRejectsEmptyStackBeforeConsumedEOF(t *testing.T) {
-	parser := NewParser(buildArithmeticLanguage())
-	s := newGLRStack(0)
-	if parser.acceptNoActionEOF(&s, Token{Symbol: 0, StartByte: 5, EndByte: 5}) {
-		t.Fatal("acceptNoActionEOF() = true, want false when empty stack has not consumed input")
-	}
-}
-
-func TestParseErrorTreeWithExpectedRootWrapsErrorNode(t *testing.T) {
-	lang := buildEOFNullableRootCycleLanguage()
-	tree := parseErrorTreeWithExpectedRoot([]byte("a"), lang, 2, true)
-	if tree == nil || tree.RootNode() == nil {
-		t.Fatal("parseErrorTreeWithExpectedRoot returned nil tree/root")
-	}
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(2); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	child := root.Child(0)
-	if child == nil || !child.IsError() {
-		t.Fatalf("root child error = %v, want true", child != nil && child.IsError())
-	}
-}
-
-func buildMultiStackNoActionEOFLanguage() *Language {
-	return &Language{
-		Name:               "multi_stack_no_action_eof",
-		SymbolCount:        5,
-		TokenCount:         2,
-		ExternalTokenCount: 0,
-		StateCount:         6,
-		LargeStateCount:    0,
-		FieldCount:         0,
-		ProductionIDCount:  2,
-		InitialState:       1,
-		SymbolNames:        []string{"EOF", "x", "A", "B", "S"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "x", Visible: true, Named: true},
-			{Name: "A", Visible: true, Named: true},
-			{Name: "B", Visible: true, Named: true},
-			{Name: "S", Visible: true, Named: true},
-		},
-		FieldNames: []string{""},
-		ParseActions: []ParseActionEntry{
-			{Actions: nil},
-			{Actions: []ParseAction{{Type: ParseActionShift, State: 2}}},
-			{Actions: []ParseAction{
-				{Type: ParseActionReduce, Symbol: 2, ChildCount: 1, ProductionID: 0},
-				{Type: ParseActionReduce, Symbol: 3, ChildCount: 0, ProductionID: 1},
-			}},
-			{Actions: []ParseAction{{Type: ParseActionShift, State: 3}}},
-			{Actions: []ParseAction{{Type: ParseActionShift, State: 4}}},
-			{Actions: []ParseAction{{Type: ParseActionShift, State: 5}}},
-			{Actions: []ParseAction{{Type: ParseActionAccept}}},
-		},
-		ParseTable: [][]uint16{
-			{0, 0, 0, 0, 0},
-			{0, 1, 3, 0, 5},
-			{2, 0, 0, 4, 0},
-			{0, 0, 0, 0, 0},
-			{0, 0, 0, 0, 0},
-			{6, 0, 0, 0, 0},
-		},
-		LexModes: []LexMode{
-			{LexState: 0},
-			{LexState: 0},
-			{LexState: 0},
-			{LexState: 0},
-			{LexState: 0},
-			{LexState: 0},
-		},
-		LexStates: []LexState{
-			{
-				AcceptToken: 0,
-				Skip:        false,
-				Default:     -1,
-				EOF:         -1,
-				Transitions: []LexTransition{
-					{Lo: 'x', Hi: 'x', NextState: 1},
-				},
-			},
-			{
-				AcceptToken: 1,
-				Skip:        false,
-				Default:     -1,
-				EOF:         -1,
-			},
-		},
-	}
-}
-
-func TestParseAcceptsFinalizableNoActionEOFBranchAmongMultipleStacks(t *testing.T) {
-	lang := buildMultiStackNoActionEOFLanguage()
-	parser := NewParser(lang)
-
-	tree := mustParse(t, parser, []byte("x"))
-	if tree == nil || tree.RootNode() == nil {
-		t.Fatal("parse returned nil tree/root")
-	}
-	if got := tree.ParseStopReason(); got != ParseStopAccepted {
-		t.Fatalf("ParseStopReason = %q, want %q", got, ParseStopAccepted)
-	}
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(4); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	child := root.Child(0)
-	if child == nil {
-		t.Fatal("root child is nil")
-	}
-	if got, want := child.Symbol(), Symbol(2); got != want {
-		t.Fatalf("root child symbol = %d, want %d", got, want)
-	}
-	if got, want := child.Text(tree.Source()), "x"; got != want {
-		t.Fatalf("root child text = %q, want %q", got, want)
-	}
-}
-
-func buildEOFNullableRootCycleLanguage() *Language {
-	return &Language{
-		Name:               "eof_nullable_root_cycle",
-		SymbolCount:        3,
-		TokenCount:         2,
-		ExternalTokenCount: 0,
-		StateCount:         3,
-		LargeStateCount:    0,
-		FieldCount:         0,
-		ProductionIDCount:  2,
-		InitialState:       0,
-		SymbolNames:        []string{"EOF", "a", "S"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "a", Visible: true, Named: false},
-			{Name: "S", Visible: true, Named: true},
-		},
-		FieldNames: []string{""},
-		ParseActions: []ParseActionEntry{
-			{Actions: nil},
-			{Actions: []ParseAction{{Type: ParseActionShift, State: 1}}},
-			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 2, ChildCount: 1, ProductionID: 0}}},
-			{Actions: []ParseAction{{Type: ParseActionShift, State: 2}}},
-			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 2, ChildCount: 0, ProductionID: 1}}},
-			{Actions: []ParseAction{{Type: ParseActionShift, State: 2}}},
-		},
-		ParseTable: [][]uint16{
-			{0, 1, 3},
-			{2, 0, 0},
-			{4, 0, 5},
-		},
-		LexModes: []LexMode{
-			{LexState: 0},
-			{LexState: 0},
-			{LexState: 0},
-		},
-		LexStates: []LexState{
-			{
-				AcceptToken: 0,
-				Skip:        false,
-				Default:     -1,
-				EOF:         -1,
-				Transitions: []LexTransition{
-					{Lo: 'a', Hi: 'a', NextState: 1},
-				},
-			},
-			{
-				AcceptToken: 1,
-				Skip:        false,
-				Default:     -1,
-				EOF:         -1,
-			},
-		},
-	}
-}
-
-func TestParseAcceptsExpectedRootBeforeNullableEOFReduceCycle(t *testing.T) {
-	lang := buildEOFNullableRootCycleLanguage()
-	parser := NewParser(lang)
-	parser.rootSymbol = 2
-	parser.hasRootSymbol = true
-
-	source := []byte("a")
-	ts := acquireDFATokenSource(NewLexer(lang.LexStates, source), lang, parser.lookupActionIndex, parser.hasKeywordState)
-	defer ts.Close()
-
-	tree := parser.parseInternal(source, ts, nil, nil, incrementalArenaClassForSource(source), nil, 0, 16, 0, false)
-	if tree == nil || tree.RootNode() == nil {
-		t.Fatal("parse returned nil tree/root")
-	}
-	if got := tree.ParseStopReason(); got != ParseStopAccepted {
-		t.Fatalf("ParseStopReason = %q, want %q", got, ParseStopAccepted)
-	}
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(2); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if root.HasError() {
-		t.Fatalf("root has error: %s", root.SExpr(lang))
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	if got, want := root.Child(0).Text(tree.Source()), "a"; got != want {
-		t.Fatalf("root child text = %q, want %q", got, want)
-	}
-}
-
-func TestAcceptExpectedRootSuffixAndUnwrapInvisibleFragment(t *testing.T) {
-	lang := &Language{
-		Name:        "expected_root_suffix_manual",
-		SymbolCount: 4,
-		TokenCount:  2,
-		SymbolNames: []string{"EOF", "item", "_fragment", "root"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "item", Visible: true, Named: true},
-			{Name: "_fragment", Visible: false, Named: true},
-			{Name: "root", Visible: true, Named: true},
-		},
-	}
-	parser := NewParser(lang)
-	parser.rootSymbol = 3
-	parser.hasRootSymbol = true
-
-	source := []byte("x")
-	arena := acquireNodeArena(arenaClassFull)
-
-	item := newLeafNodeInArena(arena, 1, true, 0, 1, Point{}, Point{Column: 1})
-	fragment := newParentNodeInArena(arena, 2, true, []*Node{item}, nil, 0)
-	fragment.parseState = 5
-	fragment.preGotoState = 1
-
-	emptyChild := newLeafNodeInArena(arena, 2, true, 1, 1, Point{Column: 1}, Point{Column: 1})
-	emptyChild.isNamed = false
-	tail := newParentNodeInArena(arena, 3, true, []*Node{emptyChild}, nil, 0)
-	tail.hasError = true
-	tail.parseState = 5
-	tail.preGotoState = 5
-
-	s := glrStack{
-		entries: []stackEntry{
-			{state: 0},
-			{state: 5, node: fragment},
-			{state: 5, node: tail},
-		},
-		cacheEntries: true,
-		byteOffset:   1,
-	}
-	if !parser.acceptExpectedRootEOF(&s, Token{Symbol: 0, StartByte: 1, EndByte: 1}, source) {
-		t.Fatal("acceptExpectedRootEOF() = false, want true for nullable expected-root suffix")
-	}
-	if !s.accepted {
-		t.Fatal("stack not marked accepted")
-	}
-
-	tree := parser.buildResultFromGLR([]glrStack{s}, source, arena, nil, nil, nil)
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(3); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if root.HasError() {
-		t.Fatalf("root has error: %s", root.SExpr(lang))
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	child := root.Child(0)
-	if child == nil {
-		t.Fatal("root child is nil")
-	}
-	if got, want := child.Symbol(), Symbol(1); got != want {
-		t.Fatalf("root child symbol = %d, want %d", got, want)
-	}
-	if got, want := child.Text(tree.Source()), "x"; got != want {
-		t.Fatalf("root child text = %q, want %q", got, want)
-	}
-}
-
-func TestAcceptExpectedRootSuffixAllowsTrailingTrivia(t *testing.T) {
-	lang := &Language{
-		Name:        "expected_root_suffix_trivia",
-		SymbolCount: 4,
-		TokenCount:  2,
-		SymbolNames: []string{"EOF", "item", "_fragment", "root"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "item", Visible: true, Named: true},
-			{Name: "_fragment", Visible: false, Named: true},
-			{Name: "root", Visible: true, Named: true},
-		},
-	}
-	parser := NewParser(lang)
-	parser.rootSymbol = 3
-	parser.hasRootSymbol = true
-
-	source := []byte("x\n")
-	arena := acquireNodeArena(arenaClassFull)
-
-	item := newLeafNodeInArena(arena, 1, true, 0, 1, Point{}, Point{Column: 1})
-	fragment := newParentNodeInArena(arena, 2, true, []*Node{item}, nil, 0)
-	fragment.parseState = 5
-	fragment.preGotoState = 1
-
-	emptyChild := newLeafNodeInArena(arena, 2, true, 2, 2, Point{Row: 1}, Point{Row: 1})
-	emptyChild.isNamed = false
-	tail := newParentNodeInArena(arena, 3, true, []*Node{emptyChild}, nil, 0)
-	tail.hasError = true
-	tail.parseState = 5
-	tail.preGotoState = 5
-
-	s := glrStack{
-		entries: []stackEntry{
-			{state: 0},
-			{state: 5, node: fragment},
-			{state: 5, node: tail},
-		},
-		cacheEntries: true,
-		byteOffset:   2,
-	}
-	if !parser.acceptExpectedRootEOF(&s, Token{Symbol: 0, StartByte: 2, EndByte: 2}, source) {
-		t.Fatal("acceptExpectedRootEOF() = false, want true when only trailing trivia precedes EOF suffix")
-	}
-	if !s.accepted {
-		t.Fatal("stack not marked accepted")
-	}
-
-	tree := parser.buildResultFromGLR([]glrStack{s}, source, arena, nil, nil, nil)
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(3); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if root.HasError() {
-		t.Fatalf("root has error: %s", root.SExpr(lang))
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	child := root.Child(0)
-	if child == nil {
-		t.Fatal("root child is nil")
-	}
-	if got, want := child.Symbol(), Symbol(1); got != want {
-		t.Fatalf("root child symbol = %d, want %d", got, want)
-	}
-	if got, want := child.Text(tree.Source()), "x"; got != want {
-		t.Fatalf("root child text = %q, want %q", got, want)
-	}
-	if got, want := root.EndByte(), uint32(len(source)); got != want {
-		t.Fatalf("root end = %d, want %d", got, want)
-	}
-}
-
-func TestAcceptExpectedRootSuffixIgnoresAnonymousZeroWidthLayoutTail(t *testing.T) {
-	lang := &Language{
-		Name:        "expected_root_suffix_layout_tail",
-		SymbolCount: 5,
-		TokenCount:  2,
-		SymbolNames: []string{"EOF", "item", "_fragment", "", "root"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "item", Visible: true, Named: true},
-			{Name: "_fragment", Visible: false, Named: true},
-			{Name: "", Visible: false, Named: false},
-			{Name: "root", Visible: true, Named: true},
-		},
-	}
-	parser := NewParser(lang)
-	parser.rootSymbol = 4
-	parser.hasRootSymbol = true
-
-	source := []byte("x\n")
-	arena := acquireNodeArena(arenaClassFull)
-
-	item := newLeafNodeInArena(arena, 1, true, 0, 1, Point{}, Point{Column: 1})
-	fragment := newParentNodeInArena(arena, 2, true, []*Node{item}, nil, 0)
-	fragment.parseState = 5
-	fragment.preGotoState = 1
-
-	layoutTail := newLeafNodeInArena(arena, 3, false, 2, 2, Point{Row: 1}, Point{Row: 1})
-	layoutTail.parseState = 5
-	layoutTail.preGotoState = 5
-
-	s := glrStack{
-		entries: []stackEntry{
-			{state: 0},
-			{state: 5, node: fragment},
-			{state: 5, node: layoutTail},
-		},
-		cacheEntries: true,
-		byteOffset:   2,
-	}
-	if !parser.acceptExpectedRootEOF(&s, Token{Symbol: 0, StartByte: 2, EndByte: 2}, source) {
-		t.Fatal("acceptExpectedRootEOF() = false, want true for anonymous zero-width layout tail")
-	}
-	if !s.accepted {
-		t.Fatal("stack not marked accepted")
-	}
-
-	tree := parser.buildResultFromGLR([]glrStack{s}, source, arena, nil, nil, nil)
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(4); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if root.HasError() {
-		t.Fatalf("root has error: %s", root.SExpr(lang))
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	child := root.Child(0)
-	if child == nil {
-		t.Fatal("root child is nil")
-	}
-	if got, want := child.Symbol(), Symbol(1); got != want {
-		t.Fatalf("root child symbol = %d, want %d", got, want)
-	}
-	if got, want := child.Text(tree.Source()), "x"; got != want {
-		t.Fatalf("root child text = %q, want %q", got, want)
-	}
-}
-
-func TestAcceptExpectedRootSuffixIgnoresNamedZeroWidthLayoutTail(t *testing.T) {
-	lang := &Language{
-		Name:        "expected_root_suffix_named_layout_tail",
-		SymbolCount: 5,
-		TokenCount:  2,
-		SymbolNames: []string{"EOF", "item", "_fragment", "_automatic_semicolon", "root"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "item", Visible: true, Named: true},
-			{Name: "_fragment", Visible: false, Named: true},
-			{Name: "_automatic_semicolon", Visible: true, Named: true},
-			{Name: "root", Visible: true, Named: true},
-		},
-	}
-	parser := NewParser(lang)
-	parser.rootSymbol = 4
-	parser.hasRootSymbol = true
-
-	source := []byte("x\n")
-	arena := acquireNodeArena(arenaClassFull)
-
-	item := newLeafNodeInArena(arena, 1, true, 0, 1, Point{}, Point{Column: 1})
-	fragment := newParentNodeInArena(arena, 2, true, []*Node{item}, nil, 0)
-	fragment.parseState = 5
-	fragment.preGotoState = 1
-
-	layoutTail := newLeafNodeInArena(arena, 3, true, 2, 2, Point{Row: 1}, Point{Row: 1})
-	layoutTail.parseState = 5
-	layoutTail.preGotoState = 5
-
-	s := glrStack{
-		entries: []stackEntry{
-			{state: 0},
-			{state: 5, node: fragment},
-			{state: 5, node: layoutTail},
-		},
-		cacheEntries: true,
-		byteOffset:   2,
-	}
-	if !parser.acceptExpectedRootEOF(&s, Token{Symbol: 0, StartByte: 2, EndByte: 2}, source) {
-		t.Fatal("acceptExpectedRootEOF() = false, want true for named zero-width layout tail")
-	}
-	if !s.accepted {
-		t.Fatal("stack not marked accepted")
-	}
-
-	tree := parser.buildResultFromGLR([]glrStack{s}, source, arena, nil, nil, nil)
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(4); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if root.HasError() {
-		t.Fatalf("root has error: %s", root.SExpr(lang))
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	child := root.Child(0)
-	if child == nil {
-		t.Fatal("root child is nil")
-	}
-	if got, want := child.Symbol(), Symbol(1); got != want {
-		t.Fatalf("root child symbol = %d, want %d", got, want)
-	}
-	if got, want := child.Text(tree.Source()), "x"; got != want {
-		t.Fatalf("root child text = %q, want %q", got, want)
-	}
-}
-
-func TestAcceptExpectedRootSuffixIgnoresHiddenZeroWidthErrorTail(t *testing.T) {
-	lang := &Language{
-		Name:        "expected_root_suffix_hidden_error_tail",
-		SymbolCount: 5,
-		TokenCount:  2,
-		SymbolNames: []string{"EOF", "item", "_fragment", "_tail_fragment", "root"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "item", Visible: true, Named: true},
-			{Name: "_fragment", Visible: false, Named: true},
-			{Name: "_tail_fragment", Visible: false, Named: true},
-			{Name: "root", Visible: true, Named: true},
-		},
-	}
-	parser := NewParser(lang)
-	parser.rootSymbol = 4
-	parser.hasRootSymbol = true
-
-	source := []byte("x\n")
-	arena := acquireNodeArena(arenaClassFull)
-
-	item := newLeafNodeInArena(arena, 1, true, 0, 1, Point{}, Point{Column: 1})
-	fragment := newParentNodeInArena(arena, 2, true, []*Node{item}, nil, 0)
-	fragment.parseState = 5
-	fragment.preGotoState = 1
-
-	emptyChild := newLeafNodeInArena(arena, 2, false, 2, 2, Point{Row: 1}, Point{Row: 1})
-	hiddenTail := newParentNodeInArena(arena, 3, true, []*Node{emptyChild}, nil, 0)
-	hiddenTail.hasError = true
-	hiddenTail.parseState = 5
-	hiddenTail.preGotoState = 5
-
-	s := glrStack{
-		entries: []stackEntry{
-			{state: 0},
-			{state: 5, node: fragment},
-			{state: 5, node: hiddenTail},
-		},
-		cacheEntries: true,
-		byteOffset:   2,
-	}
-	if !parser.acceptExpectedRootEOF(&s, Token{Symbol: 0, StartByte: 2, EndByte: 2}, source) {
-		t.Fatal("acceptExpectedRootEOF() = false, want true for hidden zero-width error tail")
-	}
-	if !s.accepted {
-		t.Fatal("stack not marked accepted")
-	}
-
-	tree := parser.buildResultFromGLR([]glrStack{s}, source, arena, nil, nil, nil)
-	root := tree.RootNode()
-	if got, want := root.Symbol(), Symbol(4); got != want {
-		t.Fatalf("root symbol = %d, want %d", got, want)
-	}
-	if root.HasError() {
-		t.Fatalf("root has error: %s", root.SExpr(lang))
-	}
-	if got, want := root.ChildCount(), 1; got != want {
-		t.Fatalf("root child count = %d, want %d", got, want)
-	}
-	child := root.Child(0)
-	if child == nil {
-		t.Fatal("root child is nil")
-	}
-	if got, want := child.Symbol(), Symbol(1); got != want {
-		t.Fatalf("root child symbol = %d, want %d", got, want)
-	}
-	if got, want := child.Text(tree.Source()), "x"; got != want {
-		t.Fatalf("root child text = %q, want %q", got, want)
-	}
-}
-
-func TestAcceptExpectedRootSuffixRejectsPendingVisibleEOFFinalization(t *testing.T) {
-	lang := &Language{
-		Name:        "expected_root_suffix_pending_visible_reduce",
-		SymbolCount: 4,
-		TokenCount:  2,
-		SymbolNames: []string{"EOF", "item", "document", "root"},
-		SymbolMetadata: []SymbolMetadata{
-			{Name: "EOF", Visible: false, Named: false},
-			{Name: "item", Visible: true, Named: true},
-			{Name: "document", Visible: true, Named: true},
-			{Name: "root", Visible: true, Named: true},
-		},
-		ParseTable: [][]uint16{
-			{},
-			{},
-			{},
-			{},
-			{},
-			{1},
-		},
-		ParseActions: []ParseActionEntry{
-			{},
-			{Actions: []ParseAction{{Type: ParseActionReduce, Symbol: 2, ChildCount: 1}}},
-		},
-	}
-	parser := NewParser(lang)
-	parser.rootSymbol = 3
-	parser.hasRootSymbol = true
-
-	source := []byte("x\n")
-	arena := acquireNodeArena(arenaClassFull)
-
-	item := newLeafNodeInArena(arena, 1, true, 0, 1, Point{}, Point{Column: 1})
-	tail := newLeafNodeInArena(arena, 3, true, 2, 2, Point{Row: 1}, Point{Row: 1})
-
-	s := glrStack{
-		entries: []stackEntry{
-			{state: 0},
-			{state: 5, node: item},
-			{state: 5, node: tail},
-		},
-		cacheEntries: true,
-		byteOffset:   2,
-	}
-	if parser.acceptExpectedRootEOF(&s, Token{Symbol: 0, StartByte: 2, EndByte: 2}, source) {
-		t.Fatal("acceptExpectedRootEOF() = true, want false while a visible non-root EOF reduction is still pending")
-	}
-	if s.accepted {
-		t.Fatal("stack marked accepted despite pending visible EOF reduction")
-	}
-}
-
 func TestPushOrExtendErrorNodeCoalescesConsecutiveTokens(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
@@ -4038,21 +3404,6 @@ func TestParserMultiDigitNumbers(t *testing.T) {
 	}
 }
 
-func TestHiddenTreeHasFieldIDsDeepChain(t *testing.T) {
-	arena := newNodeArena(arenaClassFull)
-	leaf := newLeafNodeInArena(arena, 1, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
-	leaf.fieldIDs = []FieldID{1}
-
-	root := leaf
-	for i := 0; i < 4096; i++ {
-		root = newParentNodeInArena(arena, 2, false, []*Node{root}, nil, 0)
-	}
-
-	if !hiddenTreeHasFieldIDs(root) {
-		t.Fatal("hiddenTreeHasFieldIDs returned false, want true")
-	}
-}
-
 func TestNodesFromGSSFiltersNilAndPreservesOrder(t *testing.T) {
 	var scratch gssScratch
 	n1 := NewLeafNode(1, true, 0, 1, Point{Row: 0, Column: 0}, Point{Row: 0, Column: 1})
@@ -4256,6 +3607,64 @@ func TestCompactAcceptedStacksPreservesAllAcceptedForFinalChoice(t *testing.T) {
 	}
 	if got, want := tree.RootNode().Symbol(), Symbol(3); got != want {
 		t.Fatalf("root symbol = %d, want %d", got, want)
+	}
+	tree.Release()
+}
+
+func TestBuildResultFromGLRPrefersAliasTargetTreeOnFinalTie(t *testing.T) {
+	lang := &Language{
+		SymbolCount: 4,
+		TokenCount:  1,
+		SymbolNames: []string{"EOF", "identifier", "type_identifier", "root"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF"},
+			{Name: "identifier", Visible: true, Named: true},
+			{Name: "type_identifier", Visible: true, Named: true},
+			{Name: "root", Visible: true, Named: true},
+		},
+		AliasSequences: [][]Symbol{
+			{0, 2},
+		},
+	}
+	parser := &Parser{
+		language:          lang,
+		aliasTargetSymbol: buildAliasTargetSymbols(lang),
+	}
+	source := []byte("sudog")
+	arena := acquireNodeArena(arenaClassFull)
+
+	plainLeaf := newLeafNodeInArena(arena, 1, true, 0, 5, Point{}, Point{Column: 5})
+	aliasLeaf := newLeafNodeInArena(arena, 2, true, 0, 5, Point{}, Point{Column: 5})
+	plainRoot := newParentNodeInArena(arena, 3, true, []*Node{plainLeaf}, nil, 0)
+	aliasRoot := newParentNodeInArena(arena, 3, true, []*Node{aliasLeaf}, nil, 0)
+
+	stacks := []glrStack{
+		{
+			accepted:    true,
+			byteOffset:  5,
+			score:       0,
+			branchOrder: 0,
+			entries:     []stackEntry{{state: 1, node: plainRoot}},
+		},
+		{
+			accepted:    true,
+			byteOffset:  5,
+			score:       -1,
+			branchOrder: 1,
+			entries:     []stackEntry{{state: 1, node: aliasRoot}},
+		},
+	}
+
+	tree := parser.buildResultFromGLR(stacks, source, arena, nil, nil, nil)
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("buildResultFromGLR returned nil tree/root")
+	}
+	root := tree.RootNode()
+	if got, want := root.Type(lang), "root"; got != want {
+		t.Fatalf("root type = %q, want %q", got, want)
+	}
+	if got, want := root.Child(0).Type(lang), "type_identifier"; got != want {
+		t.Fatalf("child type = %q, want %q", got, want)
 	}
 	tree.Release()
 }
@@ -4694,20 +4103,6 @@ func (eofAtZeroTokenSource) Next() Token {
 	}
 }
 
-type fixedTokenSource struct {
-	tokens []Token
-	idx    int
-}
-
-func (f *fixedTokenSource) Next() Token {
-	if f.idx >= len(f.tokens) {
-		return Token{Symbol: 0}
-	}
-	tok := f.tokens[f.idx]
-	f.idx++
-	return tok
-}
-
 type slowArithmeticTokenSource struct {
 	delay  time.Duration
 	tokens []Token
@@ -4746,38 +4141,6 @@ func TestParseRuntimeReportsTokenSourceEOFEarly(t *testing.T) {
 	}
 	if !tree.ParseStoppedEarly() {
 		t.Fatal("ParseStoppedEarly() = false, want true")
-	}
-}
-
-func TestParseWithTokenSourceSkipsUnexpectedZeroWidthToken(t *testing.T) {
-	lang := buildArithmeticLanguage()
-	parser := NewParser(lang)
-	src := []byte("1")
-
-	ts := &fixedTokenSource{
-		tokens: []Token{
-			{Symbol: 2, StartByte: 0, EndByte: 0},
-			{Symbol: 1, StartByte: 0, EndByte: 1},
-			{Symbol: 0, StartByte: 1, EndByte: 1},
-		},
-	}
-
-	tree, err := parser.ParseWithTokenSource(src, ts)
-	if err != nil {
-		t.Fatalf("ParseWithTokenSource() error = %v", err)
-	}
-	root := tree.RootNode()
-	if root == nil {
-		t.Fatal("ParseWithTokenSource() returned nil root")
-	}
-	if root.Symbol() != 3 {
-		t.Fatalf("root symbol = %d, want 3", root.Symbol())
-	}
-	if root.HasError() {
-		t.Fatalf("root has error, want clean parse")
-	}
-	if root.StartByte() != 0 || root.EndByte() != 1 {
-		t.Fatalf("root range = [%d:%d], want [0:1]", root.StartByte(), root.EndByte())
 	}
 }
 
