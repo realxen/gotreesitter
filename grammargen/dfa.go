@@ -703,6 +703,17 @@ func pruneImmediateTransitions(dfa []dfaState, immediateSyms map[int]bool) {
 // computeLexModes determines the lex modes needed for the parse table.
 // Each unique set of valid terminal symbols gets its own lex mode.
 // Returns the lex mode specs and a mapping from parser state to lex mode index.
+// terminalPatternSymSet returns the set of symbol IDs that have DFA terminal
+// patterns. Used to distinguish dual-role external tokens (which have both a
+// scanner entry and a DFA pattern) from pure-external tokens.
+func terminalPatternSymSet(ng *NormalizedGrammar) map[int]bool {
+	m := make(map[int]bool, len(ng.Terminals))
+	for _, t := range ng.Terminals {
+		m[t.SymbolID] = true
+	}
+	return m
+}
+
 func computeLexModes(
 	stateCount int,
 	tokenCount int,
@@ -714,6 +725,7 @@ func computeLexModes(
 	externalSymbols []int,
 	wordSymbolID int,
 	keywordSymbols map[int]bool,
+	terminalPatternSyms map[int]bool, // symbols that have DFA terminal patterns
 ) ([]lexModeSpec, []int) {
 	extraSet := make(map[int]bool)
 	hasTerminalExtras := false
@@ -725,23 +737,15 @@ func computeLexModes(
 	}
 
 	// External tokens are handled by the external scanner, not the DFA.
-	// Exclude "pure external" tokens (those that ONLY appear as externals)
-	// from lex mode computation. However, external tokens that are also
-	// regular terminals (like Python's ")", "]", "}", "except") MUST be
-	// included in the DFA so the main lexer can produce them. These
-	// dual-role tokens appear in the parse action table for various states.
+	// Exclude pure-external tokens from lex mode computation. Only keep
+	// external tokens that ALSO have a corresponding terminal pattern in
+	// the DFA (like Python's ")", "]", "}", "except"). Checking for a
+	// terminal pattern is more precise than checking action-table presence,
+	// because most external tokens appear in action tables but only
+	// dual-role tokens have actual DFA patterns.
 	extSet := make(map[int]bool)
 	for _, e := range externalSymbols {
-		// Check if this external symbol also appears in any state's action table.
-		// If so, it's a dual-role token and must be in the DFA.
-		isDualRole := false
-		for state := 0; state < stateCount; state++ {
-			if actionLookup(state, e) {
-				isDualRole = true
-				break
-			}
-		}
-		if !isDualRole {
+		if !terminalPatternSyms[e] {
 			extSet[e] = true
 		}
 	}

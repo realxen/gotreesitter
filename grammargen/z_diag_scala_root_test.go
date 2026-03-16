@@ -3,8 +3,8 @@ package grammargen
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -82,6 +82,7 @@ func TestDiagScalaRootRuntime(t *testing.T) {
 		ng.ExternalSymbols,
 		ng.WordSymbolID,
 		keywordSet,
+		terminalPatternSymSet(ng),
 	)
 	var diagLexStates []gotreesitter.LexState
 	var diagLexModeOffsets []int

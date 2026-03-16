@@ -67,6 +67,7 @@ func TestNonterminalExtraChainLexModesDoNotInheritTerminalExtras(t *testing.T) {
 		ng.ExternalSymbols,
 		ng.WordSymbolID,
 		map[int]bool{},
+		terminalPatternSymSet(ng),
 	)
 
 	initialMode := lexModes[stateToMode[0]]

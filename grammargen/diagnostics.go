@@ -478,6 +478,7 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 		keywordSet[ks] = true
 	}
 	stringPrefixExtensions := computeStringPrefixExtensions(ng.Terminals)
+	termPatSyms := terminalPatternSymSet(ng)
 	lexModes, stateToMode := computeLexModes(
 		tables.StateCount,
 		tokenCount,
@@ -496,6 +497,7 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 		ng.ExternalSymbols,
 		ng.WordSymbolID,
 		keywordSet,
+		termPatSyms,
 	)
 
 	skipExtras := computeSkipExtras(ng)
@@ -657,6 +659,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 		keywordSet[ks] = true
 	}
 	stringPrefixExtensions := computeStringPrefixExtensions(ng.Terminals)
+	termPatSyms := terminalPatternSymSet(ng)
 	lexModes, stateToMode := computeLexModes(
 		tables.StateCount,
 		tokenCount,
@@ -675,6 +678,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 		ng.ExternalSymbols,
 		ng.WordSymbolID,
 		keywordSet,
+		termPatSyms,
 	)
 
 	skipExtras := computeSkipExtras(ng)
