@@ -2336,13 +2336,28 @@ func flattenHiddenChoiceAlts(g *Grammar) *Grammar {
 		// repeat expansion, and doing the same removes the extra cc=1
 		// reductions from hidden repeat helpers.
 		unsafeSelfRef := false
+		allCompoundsAreSelfRecursive := true
 		for _, c := range compound {
-			if ruleReferencesSym(c, name) && !isRepeatSelfRef(c, name) {
-				unsafeSelfRef = true
-				break
+			if ruleReferencesSym(c, name) {
+				if !isRepeatSelfRef(c, name) {
+					unsafeSelfRef = true
+					break
+				}
+			} else {
+				allCompoundsAreSelfRecursive = false
 			}
 		}
 		if unsafeSelfRef {
+			continue
+		}
+
+		// When ALL compound alternatives are self-recursive (e.g.,
+		// _string_content → _string_content _string_content), stripping
+		// the pass-through base cases (string_content, escape_sequence)
+		// would leave the rule unreachable — it can only reduce from
+		// itself, with no way to create a base instance. Skip flattening
+		// for these rules to preserve their base cases.
+		if allCompoundsAreSelfRecursive {
 			continue
 		}
 
