@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for tags and release notes while still in `0.x`.
 
+## [0.7.3] - 2026-03-16
+
+### Added
+- Swift external scanner with full lexical support: all 33 external tokens, operator disambiguation, raw strings with interpolation, block comments, semicolon insertion, and compiler directives.
+- File extension registration for 48 languages.
+- Pooled file parsing to reduce parser allocations.
+- Token source state snapshot/restore for incremental leaf fast path.
+
+### Changed
+- Swift grammar source switched from abandoned `tree-sitter/tree-sitter-swift` to actively maintained `alex-pinkus/tree-sitter-swift`.
+- External scanner count increased from 112 to 116.
+- All 206 grammars now produce error-free parse trees (previously 3 degraded).
+
+### Fixed
+- Swift C parity: lock file updated to match the grammar used for blob generation.
+
 ## [0.7.0] - 2026-03-15
 
 ### Added

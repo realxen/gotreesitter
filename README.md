@@ -213,13 +213,13 @@ cpu: Intel(R) Core(TM) Ultra 9 285
 |---|---:|---:|---:|
 | Native C (pure C runtime) | 1.76 ms | 102.3 μs | 101.7 μs |
 | CGo binding (C runtime via cgo) | ~2.0 ms | ~130 μs | — |
-| gotreesitter (pure Go) | 3.52 ms | 2.46 μs | 2.22 ns |
+| gotreesitter (pure Go) | 4.20 ms | 1.49 μs | 2.18 ns |
 
 On this workload:
 
-- Full parse is ~2.0x slower than native C.
-- Incremental single-byte edits are ~41.6x faster than native C (~52.8x faster than CGo).
-- No-edit reparses are ~45,800x faster than native C, zero allocations.
+- Full parse is ~2.4x slower than native C.
+- Incremental single-byte edits are ~69x faster than native C (~87x faster than CGo).
+- No-edit reparses are ~46,600x faster than native C, zero allocations.
 
 <details>
 <summary>Raw benchmark output</summary>
@@ -228,7 +228,7 @@ On this workload:
 # Pure Go (this repo):
 GOMAXPROCS=1 go test . -run '^$' \
   -bench 'BenchmarkGoParseFullDFA|BenchmarkGoParseIncrementalSingleByteEditDFA|BenchmarkGoParseIncrementalNoEditDFA' \
-  -benchmem -count=10 -benchtime=750ms
+  -benchmem -count=10 -benchtime=1s
 
 # CGo binding benchmarks:
 cd cgo_harness
@@ -247,9 +247,9 @@ GOMAXPROCS=1 go test . -run '^$' -tags treesitter_c_bench \
 | Native C incremental (no edit) | 101,740 | — | — |
 | `CTreeSitterGoParseFull` | ~1,990,000 | 600 | 6 |
 | `CTreeSitterGoParseIncrementalSingleByteEdit` | ~130,000 | 648 | 7 |
-| `GoParseFullDFA` | 3,523,652 | 425 | 5 |
-| `GoParseIncrementalSingleByteEditDFA` | 2,458 | 496 | 9 |
-| `GoParseIncrementalNoEditDFA` | 2.223 | 0 | 0 |
+| `GoParseFullDFA` | 4,197,811 | 585 | 7 |
+| `GoParseIncrementalSingleByteEditDFA` | 1,490 | 1,584 | 9 |
+| `GoParseIncrementalNoEditDFA` | 2.181 | 0 | 0 |
 
 </details>
 
@@ -265,10 +265,10 @@ Emits `bench_out/matrix.json` (machine-readable), `bench_out/matrix.md` (summary
 
 ## Supported languages
 
-206 grammars ship in the registry. 203 currently produce error-free parse trees on smoke samples; 3 are degraded (`disassembly`, `norg`, `vimdoc`). Run `go run ./cmd/parity_report` for current status.
+206 grammars ship in the registry. All 206 produce error-free parse trees on smoke samples. Run `go run ./cmd/parity_report` for current status.
 
-- 14 hand-written (😉) Go external scanners (python, elixir, comment, doxygen, foam, nginx, nushell, r, xml, yuck, purescript, typst, html, yaml)
-- 8 hand-written Go token sources (authzed, c, go, html, java, json, lua, toml)
+- 116 external scanners (hand-written Go implementations of upstream C scanners)
+- 7 hand-written Go token sources (authzed, c, cpp, go, java, json, lua)
 - Remaining languages use the DFA lexer generated from grammar tables
 
 ### Parse quality
@@ -317,9 +317,8 @@ All shipped highlight and tags queries compile (`156/156` highlight, `69/69` tag
 
 ## Known limitations
 
-- **Full-parse throughput**: ~2.0x slower than the C runtime on cold full parses (the 500-function Go benchmark). Incremental reparsing — the dominant operation in editor workloads — is 42x faster.
+- **Full-parse throughput**: ~2.4x slower than the C runtime on cold full parses (the 500-function Go benchmark). Incremental reparsing — the dominant operation in editor workloads — is 69x faster.
 - **GLR safety caps**: The parser enforces iteration, stack depth, and node count limits proportional to input size. These prevent pathological blowup on grammars with high ambiguity but impose a ceiling on the maximum input complexity that parses without error. The caps are tunable but not removable without risking unbounded resource consumption.
-- **Degraded grammars**: 3 of 206 grammars are currently degraded: `disassembly`, `norg`, and `vimdoc`. Check `entry.Quality` and `tree.RootNode().HasError()`.
 
 ## Adding a language
 
@@ -357,7 +356,7 @@ gotreesitter is a ground-up reimplementation of the tree-sitter runtime in Go. N
 
 **Lexer** — Two paths. A DFA lexer is generated from the grammar's lex tables by `ts2go` and handles the majority of languages. For grammars where the DFA is insufficient (e.g., Go's automatic semicolons, YAML's indentation-sensitive structure), hand-written Go token sources implement the `TokenSource` interface directly.
 
-**External scanners** — 112 grammars require external scanners for context-sensitive tokens (Python indentation, HTML implicit close tags, Rust raw string delimiters, etc.). Each scanner is a hand-written Go implementation of the grammar's `ExternalScanner` interface: `Create`, `Serialize`, `Deserialize`, `Scan`. Scanner state is snapshotted after every token and stored on tree nodes so incremental reuse can restore scanner state on skip.
+**External scanners** — 116 grammars require external scanners for context-sensitive tokens (Python indentation, HTML implicit close tags, Rust raw string delimiters, Swift operator disambiguation, etc.). Each scanner is a hand-written Go implementation of the grammar's `ExternalScanner` interface: `Create`, `Serialize`, `Deserialize`, `Scan`. Scanner state is snapshotted after every token and stored on tree nodes so incremental reuse can restore scanner state on skip.
 
 **Arena allocator** — Nodes are allocated from slab-based arenas to reduce GC pressure. Arenas are released in bulk when a tree is freed.
 
@@ -406,10 +405,10 @@ GOTREESITTER_GRAMMAR_TRANSITION_INTERN_LIMIT=20000
 **GLR stack cap override**:
 
 ```sh
-GOT_GLR_MAX_STACKS=8  # overrides default GLR stack cap (default: 2)
+GOT_GLR_MAX_STACKS=8  # overrides default GLR stack cap (default: 8)
 ```
 
-Default is tuned for performance. Increase this only if a grammar/workload
+Default is tuned for correctness. Increase only if a grammar/workload
 needs more GLR alternatives to preserve parity.
 
 **Legacy benchmark compatibility only**:
@@ -442,13 +441,13 @@ Test suite covers: smoke tests (206 grammars), golden S-expression snapshots, hi
 
 ## Roadmap
 
-v0.6.0 — 206 grammars, GLR parser, incremental reparsing, query engine, tree cursor, highlighting, tagging, ABI 15 support, injection parser, typed query codegen, CST rewriter, and tightened parity/perf gates.
+v0.7.x — 206 grammars (all OK), 116 external scanners, GLR parser, incremental reparsing with external scanner checkpoints, query engine, tree cursor, highlighting, tagging, ABI 15 support, injection parser, typed query codegen, CST rewriter, parser pool, arena memory budgets, and structural parity against 100+ curated C reference grammars.
 
 Next:
-- Corpus parity testing against C tree-sitter reference output
-- GLR ambiguity overhead reduction for large files
-- Port norg external scanner
-- Fuzz coverage expansion
+- Pure-Go grammar compiler (grammargen) — eliminate dependency on upstream `parser.c` files
+- TypeScript full-corpus parity
+- Python incremental parsing with fine-grained indent checkpoint validation
+- Table-based DFA C codegen for grammargen (compact output for Unicode-heavy grammars)
 
 Release history and retroactive notes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
