@@ -178,7 +178,7 @@ func TestPreprocess_TypedCapture(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "func __GREP_TYPED_NAME_identifier__() error"
+	want := "func __GREP_TYPED_NAME__T__identifier__() error"
 	if got != want {
 		t.Errorf("pattern = %q, want %q", got, want)
 	}
@@ -186,9 +186,9 @@ func TestPreprocess_TypedCapture(t *testing.T) {
 		t.Fatalf("len(mvars) = %d, want 1", len(mvars))
 	}
 
-	mv, ok := mvars["__GREP_TYPED_NAME_identifier__"]
+	mv, ok := mvars["__GREP_TYPED_NAME__T__identifier__"]
 	if !ok {
-		t.Fatal("missing MetaVar for __GREP_TYPED_NAME_identifier__")
+		t.Fatal("missing MetaVar for __GREP_TYPED_NAME__T__identifier__")
 	}
 	if mv.Name != "NAME" {
 		t.Errorf("Name = %q, want %q", mv.Name, "NAME")
@@ -211,7 +211,7 @@ func TestPreprocess_MixedMetavariables(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "func __GREP_TYPED_NAME_identifier__(__GREP_VAR_PARAMS__) __GREP_WILD_1__ { __GREP_WILD_2__ }"
+	want := "func __GREP_TYPED_NAME__T__identifier__(__GREP_VAR_PARAMS__) __GREP_WILD_1__ { __GREP_WILD_2__ }"
 	if got != want {
 		t.Errorf("pattern = %q, want %q", got, want)
 	}
@@ -327,7 +327,7 @@ func TestPreprocess_TypedCaptureWithUnderscoreType(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "__GREP_TYPED_EXPR_call_expression__"
+	want := "__GREP_TYPED_EXPR__T__call_expression__"
 	if got != want {
 		t.Errorf("pattern = %q, want %q", got, want)
 	}
@@ -366,7 +366,7 @@ func TestPreprocess_ComplexRealWorldPattern(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "func __GREP_TYPED_NAME_identifier__(__GREP_VAR_PARAMS__) (__GREP_CAP_RET__, error) { __GREP_VAR_BODY__ }"
+	want := "func __GREP_TYPED_NAME__T__identifier__(__GREP_VAR_PARAMS__) (__GREP_CAP_RET__, error) { __GREP_VAR_BODY__ }"
 	if got != want {
 		t.Errorf("pattern = %q\n   want %q", got, want)
 	}

@@ -58,7 +58,7 @@ var metaVarRe = regexp.MustCompile(
 //	$NAME       → __GREP_CAP_NAME__    (single capture)
 //	$$$ITEMS    → __GREP_VAR_ITEMS__   (variadic capture)
 //	$_          → __GREP_WILD_1__      (wildcard, numbered for uniqueness)
-//	$NAME:type  → __GREP_TYPED_NAME_type__ (typed capture)
+//	$NAME:type  → __GREP_TYPED_NAME__T__type__ (typed capture)
 func Preprocess(pattern string) (string, map[string]*MetaVar, error) {
 	// Check for reserved prefix in the raw pattern before any substitution.
 	if strings.Contains(pattern, reservedPrefix) {
@@ -131,7 +131,7 @@ func Preprocess(pattern string) (string, map[string]*MetaVar, error) {
 				if ok {
 					ph = existing
 				} else {
-					ph = "__GREP_TYPED_" + name + "_" + typeConstraint + "__"
+					ph = "__GREP_TYPED_" + name + "__T__" + typeConstraint + "__"
 					mvars[ph] = &MetaVar{
 						Name:           name,
 						Placeholder:    ph,
