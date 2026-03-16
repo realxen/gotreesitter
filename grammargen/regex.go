@@ -2,6 +2,7 @@ package grammargen
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -12,7 +13,7 @@ import (
 type regexNode struct {
 	kind     regexKind
 	children []*regexNode
-	lo, hi   rune // for charRange
+	lo, hi   rune        // for charRange
 	runes    []runeRange // for charClass
 	negate   bool        // for charClass
 	value    rune        // for literal
@@ -23,15 +24,15 @@ type regexNode struct {
 type regexKind int
 
 const (
-	regexLiteral  regexKind = iota // single character
-	regexCharClass                 // [a-z] or [^a-z]
-	regexDot                       // . (any character except \n)
-	regexSeq                       // concatenation
-	regexAlt                       // alternation |
-	regexStar                      // * zero-or-more
-	regexPlus                      // + one-or-more
-	regexQuestion                  // ? optional
-	regexCount                     // {n} exactly n times
+	regexLiteral   regexKind = iota // single character
+	regexCharClass                  // [a-z] or [^a-z]
+	regexDot                        // . (any character except \n)
+	regexSeq                        // concatenation
+	regexAlt                        // alternation |
+	regexStar                       // * zero-or-more
+	regexPlus                       // + one-or-more
+	regexQuestion                   // ? optional
+	regexCount                      // {n} exactly n times
 )
 
 // runeRange is an inclusive character range.
@@ -285,6 +286,31 @@ func (p *regexParser) parseCharClass() (*regexNode, error) {
 				ranges = append(ranges, runeRange{'a', 'z'}, runeRange{'A', 'Z'}, runeRange{'0', '9'}, runeRange{'_', '_'})
 				continue
 			}
+		}
+
+		// Character class intersection: &&[...]
+		if r == '&' && p.pos+1 < len(p.input) && rune(p.input[p.pos+1]) == '&' {
+			p.advance() // consume first '&'
+			p.advance() // consume second '&'
+			// Parse the intersected class (must start with '[')
+			if r2, ok := p.peek(); !ok || r2 != '[' {
+				return nil, fmt.Errorf("expected '[' after '&&' in character class intersection")
+			}
+			innerNode, err := p.parseCharClass()
+			if err != nil {
+				return nil, fmt.Errorf("intersection class: %w", err)
+			}
+			// Compute intersection: keep only ranges from 'ranges' that are NOT in innerNode
+			// (when innerNode is negated, e.g. &&[^0-9#*], it means "exclude these")
+			// or that ARE in innerNode (when not negated).
+			if innerNode.negate {
+				// &&[^...] means subtract innerNode.runes from ranges
+				ranges = subtractRuneRanges(ranges, innerNode.runes)
+			} else {
+				// &&[...] means intersect ranges with innerNode.runes
+				ranges = intersectRuneRanges(ranges, innerNode.runes)
+			}
+			continue
 		}
 
 		ch, err := p.parseCharClassChar()
@@ -542,6 +568,9 @@ func unicodePropertyRanges(name string) ([]runeRange, error) {
 		switch name {
 		case "Emoji":
 			return emojiRanges(), nil
+		case "EMod", "Emoji_Modifier":
+			// Emoji skin tone modifiers: U+1F3FB-1F3FF
+			return []runeRange{{0x1F3FB, 0x1F3FF}}, nil
 		}
 		return nil, fmt.Errorf("unsupported Unicode property %q", name)
 	}
@@ -620,8 +649,24 @@ func rangeTableToRuneRanges(table *unicode.RangeTable) []runeRange {
 	return ranges
 }
 
-// parseHexEscape parses \xNN (exactly 2 hex digits).
+// parseHexEscape parses \xNN (exactly 2 hex digits) or \x{NNNN} (braced form).
 func (p *regexParser) parseHexEscape() (rune, error) {
+	// Braced form: \x{NNNN} — variable-length, used by tree-sitter for Unicode code points
+	if p.pos < len(p.input) && p.input[p.pos] == '{' {
+		p.pos++ // consume '{'
+		end := strings.IndexByte(p.input[p.pos:], '}')
+		if end < 0 {
+			return 0, fmt.Errorf("unterminated \\x{...} escape")
+		}
+		hex := p.input[p.pos : p.pos+end]
+		p.pos += end + 1 // consume hex digits and '}'
+		n, err := strconv.ParseUint(hex, 16, 32)
+		if err != nil {
+			return 0, fmt.Errorf("invalid \\x{%s} escape: %w", hex, err)
+		}
+		return rune(n), nil
+	}
+	// Standard form: \xNN (exactly 2 hex digits)
 	if p.pos+2 > len(p.input) {
 		return 0, fmt.Errorf("incomplete \\x escape")
 	}
@@ -785,4 +830,67 @@ func expandPatternRule(pattern string) (*Rule, error) {
 		return nil, fmt.Errorf("regex parse %q: %w", pattern, err)
 	}
 	return expandRegexToRule(node), nil
+}
+
+// subtractRuneRanges removes all code points in 'sub' from 'base'.
+func subtractRuneRanges(base, sub []runeRange) []runeRange {
+	sort.Slice(base, func(i, j int) bool { return base[i].lo < base[j].lo })
+	sort.Slice(sub, func(i, j int) bool { return sub[i].lo < sub[j].lo })
+	var result []runeRange
+	si := 0
+	for _, b := range base {
+		lo := b.lo
+		// Reset si to find the first sub range that could overlap this base range
+		for si > 0 && sub[si-1].hi >= lo {
+			si--
+		}
+		for si < len(sub) && sub[si].lo <= b.hi {
+			s := sub[si]
+			if s.hi < lo {
+				si++
+				continue
+			}
+			if s.lo > lo {
+				result = append(result, runeRange{lo, s.lo - 1})
+			}
+			lo = s.hi + 1
+			if lo > b.hi {
+				break
+			}
+			si++
+		}
+		if lo <= b.hi {
+			result = append(result, runeRange{lo, b.hi})
+		}
+	}
+	return result
+}
+
+// intersectRuneRanges keeps only code points present in both 'base' and 'keep'.
+// Both inputs must be sorted and non-overlapping.
+func intersectRuneRanges(base, keep []runeRange) []runeRange {
+	sort.Slice(base, func(i, j int) bool { return base[i].lo < base[j].lo })
+	sort.Slice(keep, func(i, j int) bool { return keep[i].lo < keep[j].lo })
+	var result []runeRange
+	bi, ki := 0, 0
+	for bi < len(base) && ki < len(keep) {
+		b, k := base[bi], keep[ki]
+		lo := b.lo
+		if k.lo > lo {
+			lo = k.lo
+		}
+		hi := b.hi
+		if k.hi < hi {
+			hi = k.hi
+		}
+		if lo <= hi {
+			result = append(result, runeRange{lo, hi})
+		}
+		if b.hi < k.hi {
+			bi++
+		} else {
+			ki++
+		}
+	}
+	return result
 }

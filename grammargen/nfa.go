@@ -3,6 +3,7 @@ package grammargen
 import (
 	"fmt"
 	"strconv"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -16,8 +17,8 @@ type nfaTransition struct {
 // nfaState is a single state in the NFA.
 type nfaState struct {
 	transitions []nfaTransition
-	accept      int  // symbol ID if accepting, 0 if not
-	priority    int  // for disambiguation: lower = higher priority
+	accept      int // symbol ID if accepting, 0 if not
+	priority    int // for disambiguation: lower = higher priority
 }
 
 // nfa holds the complete NFA.
@@ -65,7 +66,7 @@ func (b *nfaBuilder) buildFromRule(r *Rule) (nfaFragment, error) {
 	case RuleString:
 		return b.buildString(r.Value), nil
 	case RulePattern:
-		return b.buildCharClass(r.Value)
+		return b.buildPattern(r.Value)
 	case RuleSeq:
 		return b.buildSeq(r.Children)
 	case RuleChoice:
@@ -113,6 +114,186 @@ func (b *nfaBuilder) buildString(s string) nfaFragment {
 		i += size
 	}
 	return nfaFragment{start, cur}
+}
+
+// buildPattern parses a regex pattern string and builds the NFA from
+// the full regex AST. This correctly handles character class features
+// like intersection (&&[^0-9]) and Unicode properties (\p{XID_Start}).
+func (b *nfaBuilder) buildPattern(pattern string) (nfaFragment, error) {
+	node, err := parseRegex(pattern)
+	if err != nil {
+		return nfaFragment{}, fmt.Errorf("parse regex %q: %w", pattern, err)
+	}
+	return b.buildFromRegexNode(node)
+}
+
+func (b *nfaBuilder) buildFromRegexNode(node *regexNode) (nfaFragment, error) {
+	if node == nil {
+		return b.buildEpsilon(), nil
+	}
+	switch node.kind {
+	case regexLiteral:
+		start := b.addState()
+		end := b.addState()
+		b.addCharRange(start, node.value, node.value, end)
+		return nfaFragment{start, end}, nil
+
+	case regexCharClass:
+		start := b.addState()
+		end := b.addState()
+		ranges := node.runes
+		if node.negate {
+			ranges = complementRanges(ranges)
+		}
+		for _, rr := range ranges {
+			b.addCharRange(start, rr.lo, rr.hi, end)
+		}
+		return nfaFragment{start, end}, nil
+
+	case regexDot:
+		start := b.addState()
+		end := b.addState()
+		// . matches everything except \n
+		b.addCharRange(start, 0, '\n'-1, end)
+		b.addCharRange(start, '\n'+1, unicode.MaxRune, end)
+		return nfaFragment{start, end}, nil
+
+	case regexSeq:
+		if len(node.children) == 0 {
+			return b.buildEpsilon(), nil
+		}
+		first, err := b.buildFromRegexNode(node.children[0])
+		if err != nil {
+			return nfaFragment{}, err
+		}
+		cur := first
+		for _, c := range node.children[1:] {
+			next, err := b.buildFromRegexNode(c)
+			if err != nil {
+				return nfaFragment{}, err
+			}
+			b.addEpsilon(cur.end, next.start)
+			cur = nfaFragment{cur.start, next.end}
+		}
+		return cur, nil
+
+	case regexAlt:
+		if len(node.children) == 0 {
+			return b.buildEpsilon(), nil
+		}
+		start := b.addState()
+		end := b.addState()
+		for _, c := range node.children {
+			frag, err := b.buildFromRegexNode(c)
+			if err != nil {
+				return nfaFragment{}, err
+			}
+			b.addEpsilon(start, frag.start)
+			b.addEpsilon(frag.end, end)
+		}
+		return nfaFragment{start, end}, nil
+
+	case regexStar:
+		if len(node.children) == 0 {
+			return b.buildEpsilon(), nil
+		}
+		inner, err := b.buildFromRegexNode(node.children[0])
+		if err != nil {
+			return nfaFragment{}, err
+		}
+		start := b.addState()
+		end := b.addState()
+		b.addEpsilon(start, inner.start)
+		b.addEpsilon(start, end)
+		b.addEpsilon(inner.end, inner.start)
+		b.addEpsilon(inner.end, end)
+		return nfaFragment{start, end}, nil
+
+	case regexPlus:
+		if len(node.children) == 0 {
+			return b.buildEpsilon(), nil
+		}
+		inner, err := b.buildFromRegexNode(node.children[0])
+		if err != nil {
+			return nfaFragment{}, err
+		}
+		start := b.addState()
+		end := b.addState()
+		b.addEpsilon(start, inner.start)
+		b.addEpsilon(inner.end, inner.start)
+		b.addEpsilon(inner.end, end)
+		return nfaFragment{start, end}, nil
+
+	case regexQuestion:
+		if len(node.children) == 0 {
+			return b.buildEpsilon(), nil
+		}
+		inner, err := b.buildFromRegexNode(node.children[0])
+		if err != nil {
+			return nfaFragment{}, err
+		}
+		start := b.addState()
+		end := b.addState()
+		b.addEpsilon(start, inner.start)
+		b.addEpsilon(start, end)
+		b.addEpsilon(inner.end, end)
+		return nfaFragment{start, end}, nil
+
+	case regexCount:
+		if len(node.children) == 0 {
+			return b.buildEpsilon(), nil
+		}
+		minCount := node.count
+		maxCount := node.countMax
+		if maxCount == 0 {
+			maxCount = minCount
+		}
+		// Build min required copies
+		var cur nfaFragment
+		for i := 0; i < minCount; i++ {
+			copy, err := b.buildFromRegexNode(node.children[0])
+			if err != nil {
+				return nfaFragment{}, err
+			}
+			if i == 0 {
+				cur = copy
+			} else {
+				b.addEpsilon(cur.end, copy.start)
+				cur = nfaFragment{cur.start, copy.end}
+			}
+		}
+		if minCount == 0 {
+			cur = b.buildEpsilon()
+		}
+		// Build optional copies up to max
+		if maxCount < 0 {
+			// {n,} = unbounded: add a star after the required copies
+			star, err := b.buildFromRegexNode(node.children[0])
+			if err != nil {
+				return nfaFragment{}, err
+			}
+			loop := b.addState()
+			b.addEpsilon(cur.end, loop)
+			b.addEpsilon(loop, star.start)
+			b.addEpsilon(star.end, loop)
+			return nfaFragment{cur.start, loop}, nil
+		}
+		for i := minCount; i < maxCount; i++ {
+			opt, err := b.buildFromRegexNode(node.children[0])
+			if err != nil {
+				return nfaFragment{}, err
+			}
+			end := b.addState()
+			b.addEpsilon(cur.end, opt.start)
+			b.addEpsilon(cur.end, end)
+			b.addEpsilon(opt.end, end)
+			cur = nfaFragment{cur.start, end}
+		}
+		return cur, nil
+
+	default:
+		return nfaFragment{}, fmt.Errorf("unsupported regex node kind %d in NFA construction", node.kind)
+	}
 }
 
 // buildCharClass handles a pre-formatted character class pattern like [a-z] or [^...].
