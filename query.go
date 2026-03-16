@@ -109,6 +109,8 @@ const (
 //   - (#not-has-parent? @a type ...)
 //   - (#is? ...), (#is-not? ...)
 //   - (#set! key value), (#offset! @cap ...)
+//   - (#count? @a op value)       -- op: >, <, >=, <=, ==, !=
+//   - (#is-exported? @a)
 type QueryPredicate struct {
 	kind queryPredicateType
 
