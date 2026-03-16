@@ -299,6 +299,7 @@ cd /workspace
   GTS_GRAMMARGEN_REAL_CORPUS_ALLOW_PARTIAL=1 \
   GTS_GRAMMARGEN_REAL_CORPUS_FLOORS_PATH=/tmp/real_corpus_parity_floors.json \
   GTS_GRAMMARGEN_REAL_CORPUS_SKIP=rust,c_sharp,java,ruby,cpp,kotlin,css,scala,go_lang,c_lang,python,javascript,dockerfile \
+  GOGC=50 GOMEMLIMIT=10GiB \
   go test ./grammargen -run '^TestMultiGrammarImportRealCorpusParity$' -count=1 -v -timeout 90m
 EOF2
 
