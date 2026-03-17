@@ -1,6 +1,7 @@
 package grammargen
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -89,7 +90,7 @@ func TestDiagScalaRootRuntime(t *testing.T) {
 	var diagLexModeOffsets []int
 	if os.Getenv("DIAG_SCALA_LEX_BYTE") != "" {
 		skipExtras := computeSkipExtras(ng)
-		diagLexStates, diagLexModeOffsets, err = buildLexDFA(ng.Terminals, ng.ExtraSymbols, skipExtras, diagLexModes)
+		diagLexStates, diagLexModeOffsets, err = buildLexDFA(context.Background(), ng.Terminals, ng.ExtraSymbols, skipExtras, diagLexModes)
 		if err != nil {
 			t.Fatalf("build diag lex DFA: %v", err)
 		}

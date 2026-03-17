@@ -273,7 +273,9 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 					continue
 				}
 
-				refHasError := strings.Contains(refSexp, "ERROR") || strings.Contains(refSexp, "MISSING")
+				refHasError := strings.Contains(refSexp, "ERROR") ||
+					strings.Contains(refSexp, "MISSING") ||
+					refRoot.HasError()
 				if refHasError {
 					continue
 				}

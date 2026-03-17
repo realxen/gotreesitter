@@ -2336,6 +2336,32 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 		// Tree-sitter keeps S/R as GLR when the reduce LHS and a shift LHS
 		// are both in the same declared conflict group.
 		if shiftReduceInConflictGroup(shifts, reduces, ng, cache) {
+			// When the shift and reduce share the same LHS symbol (intra-
+			// symbol conflict, e.g. binary_expression && vs ||), explicit
+			// precedence/associativity should still resolve the conflict.
+			// Without this, all binary operators with different precedences
+			// would be kept as GLR, causing wrong associativity at runtime.
+			// Inter-symbol conflicts (different LHS) stay as GLR — those
+			// represent genuine ambiguities declared by the grammar author.
+			sameLHS := shift.lhsSym == prod.LHS
+			if sameLHS {
+				shiftP := shift.prec
+				reduceP := prod.Prec
+				if (shiftP != 0 || reduceP != 0) && shiftP != reduceP {
+					if reduceP > shiftP {
+						return []lrAction{reduce}, nil
+					}
+					return []lrAction{shift}, nil
+				}
+				if shiftP == reduceP && prod.Assoc != AssocNone {
+					switch prod.Assoc {
+					case AssocLeft:
+						return []lrAction{reduce}, nil
+					case AssocRight:
+						return []lrAction{shift}, nil
+					}
+				}
+			}
 			return actions, nil
 		}
 		// Fallback: if the reduce LHS is in ANY conflict group, keep GLR —
