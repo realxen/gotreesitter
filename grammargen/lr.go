@@ -2462,6 +2462,17 @@ func resolveReduceReduceLegacy(lookaheadSym int, reduces []lrAction, ng *Normali
 		return reduces, nil
 	}
 
+	// Keep GLR when competing reduces produce distinct repeat helpers
+	// with the same precedence. These repeat helpers serve different
+	// parent productions (e.g. declaration_repeat17 for `declaration`
+	// requiring ";" vs last_declaration_repeat18 for `last_declaration`
+	// without ";"). Picking one deterministically kills the other
+	// parse path, causing ERROR when the unchosen parent context is
+	// needed. The correct disambiguation happens at the parent level.
+	if shouldKeepDistinctRepeatReduces(reduces, ng) {
+		return reduces, nil
+	}
+
 	return rrPickBest(reduces, ng), nil
 }
 
@@ -2577,6 +2588,36 @@ func shouldKeepNestedWrapperReduces(reduces []lrAction, ng *NormalizedGrammar) b
 		}
 	}
 	return false
+}
+
+// shouldKeepDistinctRepeatReduces returns true when all competing reduces
+// produce distinct repeat helper symbols (names containing "repeat") with the
+// same precedence. These helpers serve different parent contexts — e.g. one
+// parent requires a trailing ";" and the other doesn't — so picking one
+// deterministically kills the other parse path. GLR preserves both paths
+// until the parent production disambiguates.
+func shouldKeepDistinctRepeatReduces(reduces []lrAction, ng *NormalizedGrammar) bool {
+	if len(reduces) < 2 {
+		return false
+	}
+	// All must be repeat helpers and share the same (prec, dynPrec).
+	firstProd := &ng.Productions[reduces[0].prodIdx]
+	lhsSet := make(map[int]bool, len(reduces))
+	for _, r := range reduces {
+		prod := &ng.Productions[r.prodIdx]
+		if prod.Prec != firstProd.Prec || prod.DynPrec != firstProd.DynPrec {
+			return false // precedence differs — let rrPickBest resolve
+		}
+		if prod.LHS < 0 || prod.LHS >= len(ng.Symbols) {
+			return false
+		}
+		if !strings.Contains(ng.Symbols[prod.LHS].Name, "repeat") {
+			return false // not a repeat helper
+		}
+		lhsSet[prod.LHS] = true
+	}
+	// Must produce at least two distinct repeat helpers.
+	return len(lhsSet) >= 2
 }
 
 // shiftReduceInConflictGroup checks whether any (reduce LHS, shift LHS) pair

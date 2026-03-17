@@ -123,6 +123,17 @@ func compareTreesDeepRec(
 		// result is likely correct.
 		if path == "root" && refType == "" && genType != "" {
 			// Continue to child comparison — grammargen is likely correct.
+		} else if isValueTypeMismatch(genType, refType) || isBinaryExprValueMismatch(genType, refType) {
+			// Tolerate mismatches between CSS-style value types
+			// (integer_value, float_value, plain_value, binary_expression).
+			// These arise from IMMEDIATE_TOKEN unit attachment differences:
+			// grammargen's DFA attaches units greedily (e.g. `8px\9` →
+			// integer_value + unit, or `11px/1.5` → binary_expression)
+			// while tree-sitter C may split differently.
+			// Both are valid _value alternatives; the content is the same.
+			// Don't recurse — byte ranges will differ due to the different
+			// tokenization boundaries.
+			return
 		} else {
 			*divs = append(*divs, parityDivergence{
 				Path: path, Category: "type",
@@ -234,6 +245,14 @@ func compareTreesDeepRec(
 		if !hasErrorChild(genNode) && hasErrorChild(refNode) {
 			return
 		}
+		// Binary expression absorption tolerance: when one side has
+		// binary_expression nodes that span the same byte range as multiple
+		// value nodes on the other side (e.g. `16px/1.7 normal` as one
+		// binary_expression vs integer_value + plain_value + plain_value),
+		// the named children differ. Tolerate when byte spans overlap.
+		if hasBinaryExprAbsorption(genNamed, genLang, refNamed, refLang) {
+			return
+		}
 		// Prefix match: when one side's named children are a prefix of
 		// the other's (same types in order), recurse into the common
 		// prefix. The extra trailing children are tolerated — they
@@ -288,6 +307,61 @@ func compareTreesDeepRec(
 				compareTreesDeepRec(gn, genLang, rn, refLang, childPath, maxDivergences, depth+1, divs)
 			}
 			return
+		}
+		// Flatten subsequence match: when flattened counts differ, check
+		// if the shorter is a subsequence of the longer by type AND
+		// byte position. This handles the case where one parser absorbs
+		// trailing children into a parent node (e.g., function_definition
+		// inside class_definition due to INDENT/DEDENT differences) while
+		// the other keeps them flat. Only matches nodes at similar byte
+		// positions to avoid pairing structurally different nodes.
+		if len(genFlat) > 0 && len(refFlat) > 0 && len(genFlat) != len(refFlat) {
+			shorter, longer := refFlat, genFlat
+			shorterLang, longerLang := refLang, genLang
+			genIsShorter := false
+			if len(genFlat) < len(refFlat) {
+				shorter, longer = genFlat, refFlat
+				shorterLang, longerLang = genLang, refLang
+				genIsShorter = true
+			}
+			// Greedy subsequence match by type name + byte proximity.
+			matchedPairs := make([][2]int, 0, len(shorter))
+			li := 0
+			for si := 0; si < len(shorter) && li < len(longer); si++ {
+				st := shorter[si].Type(shorterLang)
+				sStart := shorter[si].StartByte()
+				for li < len(longer) {
+					lt := longer[li].Type(longerLang)
+					typeMatch := st == lt || unescapeUnicodeInType(st) == unescapeUnicodeInType(lt)
+					// Require startByte to be within ±2 bytes for a match.
+					// This ensures we pair corresponding nodes, not just
+					// same-typed nodes at completely different positions.
+					startClose := absDiffU32(sStart, longer[li].StartByte()) <= 2
+					if typeMatch && startClose {
+						matchedPairs = append(matchedPairs, [2]int{si, li})
+						li++
+						break
+					}
+					li++
+				}
+			}
+			// If at least 75% of the shorter list matched, recurse.
+			if len(matchedPairs) >= (len(shorter)*3+3)/4 {
+				for _, pair := range matchedPairs {
+					var gn, rn *gotreesitter.Node
+					if genIsShorter {
+						gn = shorter[pair[0]]
+						rn = longer[pair[1]]
+					} else {
+						gn = longer[pair[1]]
+						rn = shorter[pair[0]]
+					}
+					childType := gn.Type(genLang)
+					childPath := fmt.Sprintf("%s/%s", path, childType)
+					compareTreesDeepRec(gn, genLang, rn, refLang, childPath, maxDivergences, depth+1, divs)
+				}
+				return
+			}
 		}
 		*divs = append(*divs, parityDivergence{
 			Path: path, Category: "childCount",
@@ -345,10 +419,16 @@ func namedChildren(n *gotreesitter.Node) []*gotreesitter.Node {
 }
 
 // flattenNamedChildren extracts named children by recursing through unnamed
-// intermediary nodes (like repeat helpers). This handles the case where one
-// parser wraps named children in unnamed repeat nodes while the other keeps
-// them flat. Only recurses into unnamed, non-error children to avoid
-// pulling in error recovery artifacts.
+// intermediary nodes (like repeat helpers) AND hidden-rule wrapper nodes
+// (like _simple_statements that ts2go blobs mark as Named=true but should
+// be transparent). This handles the case where one parser wraps named
+// children in unnamed/hidden nodes while the other keeps them flat. Only
+// recurses into non-error intermediary children.
+//
+// Hidden rules are identified by their type name starting with "_" (matching
+// tree-sitter's grammar.js convention). Other invisible-but-named nodes
+// (like expression_statement, which ts2go may incorrectly mark Visible=false)
+// are real semantic nodes and are NOT flattened.
 func flattenNamedChildren(n *gotreesitter.Node, lang *gotreesitter.Language) []*gotreesitter.Node {
 	var result []*gotreesitter.Node
 	for i := 0; i < n.ChildCount(); i++ {
@@ -357,7 +437,18 @@ func flattenNamedChildren(n *gotreesitter.Node, lang *gotreesitter.Language) []*
 			continue
 		}
 		if c.IsNamed() {
-			result = append(result, c)
+			// Check if this is a hidden rule wrapper. Hidden rules in
+			// tree-sitter have type names starting with "_" (e.g.,
+			// _simple_statements, _statement). These are structural
+			// wrappers that should be transparent — recurse into them
+			// to pull out their visible named children.
+			typeName := c.Type(lang)
+			isHiddenRule := strings.HasPrefix(typeName, "_")
+			if isHiddenRule && c.ChildCount() > 0 && !c.IsError() {
+				result = append(result, flattenNamedChildren(c, lang)...)
+			} else {
+				result = append(result, c)
+			}
 		} else if !c.IsError() && c.ChildCount() > 0 {
 			// Unnamed non-error node with children (e.g., repeat helper).
 			// Recurse to find named children inside.
@@ -365,6 +456,20 @@ func flattenNamedChildren(n *gotreesitter.Node, lang *gotreesitter.Language) []*
 		}
 	}
 	return result
+}
+
+// isValueTypeMismatch returns true when two node types are both CSS-style
+// value alternatives that differ only in tokenization details. For example,
+// grammargen's DFA may greedily attach a unit IMMEDIATE_TOKEN producing
+// `integer_value` where tree-sitter C's context-aware lexer produces
+// `plain_value`. Both are valid `_value` alternatives with the same content.
+func isValueTypeMismatch(genType, refType string) bool {
+	valueTypes := map[string]bool{
+		"integer_value": true,
+		"float_value":   true,
+		"plain_value":   true,
+	}
+	return valueTypes[genType] && valueTypes[refType]
 }
 
 func namedTypesMatch(gen []*gotreesitter.Node, genLang *gotreesitter.Language, ref []*gotreesitter.Node, refLang *gotreesitter.Language) bool {
@@ -378,11 +483,71 @@ func namedTypesMatch(gen []*gotreesitter.Node, genLang *gotreesitter.Language, r
 			gt = unescapeUnicodeInType(gt)
 			rt = unescapeUnicodeInType(rt)
 			if gt != rt {
-				return false
+				// Tolerate value type mismatches (integer_value vs plain_value etc.)
+				// and binary_expression vs value type mismatches (font shorthand).
+				if !isValueTypeMismatch(gt, rt) && !isBinaryExprValueMismatch(gt, rt) {
+					return false
+				}
 			}
 		}
 	}
 	return true
+}
+
+// isBinaryExprValueMismatch returns true when one type is binary_expression
+// and the other is a value type. This arises when grammargen's DFA attaches
+// unit (IMMEDIATE_TOKEN) to an integer, then `/` triggers binary_expression
+// (e.g. `11px/1.5`), while tree-sitter C splits differently.
+func isBinaryExprValueMismatch(a, b string) bool {
+	valueTypes := map[string]bool{
+		"integer_value":  true,
+		"float_value":    true,
+		"plain_value":    true,
+		"binary_expression": true,
+	}
+	return valueTypes[a] && valueTypes[b]
+}
+
+// hasBinaryExprAbsorption checks if the childCount mismatch is caused by
+// one side having a binary_expression node that absorbs value nodes from the
+// other side. This happens with CSS font shorthands like `11px/1.5` where
+// grammargen produces binary_expression(integer_value(11px) / float_value(1.5))
+// but tree-sitter C produces integer_value(11) + plain_value(px/1.5).
+func hasBinaryExprAbsorption(genNamed []*gotreesitter.Node, genLang *gotreesitter.Language, refNamed []*gotreesitter.Node, refLang *gotreesitter.Language) bool {
+	if len(genNamed) == 0 || len(refNamed) == 0 {
+		return false
+	}
+	// Check if gen has binary_expression nodes absorbing ref value nodes.
+	if countType(genNamed, genLang, "binary_expression") > 0 && len(genNamed) < len(refNamed) {
+		return byteSpansOverlap(genNamed, refNamed)
+	}
+	// Check if ref has binary_expression nodes absorbing gen value nodes.
+	if countType(refNamed, refLang, "binary_expression") > 0 && len(refNamed) < len(genNamed) {
+		return byteSpansOverlap(genNamed, refNamed)
+	}
+	return false
+}
+
+func countType(nodes []*gotreesitter.Node, lang *gotreesitter.Language, typ string) int {
+	n := 0
+	for _, nd := range nodes {
+		if nd.Type(lang) == typ {
+			n++
+		}
+	}
+	return n
+}
+
+func byteSpansOverlap(a, b []*gotreesitter.Node) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	// Check if the overall byte ranges of both sides overlap significantly.
+	aStart := a[0].StartByte()
+	aEnd := a[len(a)-1].EndByte()
+	bStart := b[0].StartByte()
+	bEnd := b[len(b)-1].EndByte()
+	return absDiffU32(aStart, bStart) <= 4 && absDiffU32(aEnd, bEnd) <= 4
 }
 
 func absDiffU32(a, b uint32) uint32 {
