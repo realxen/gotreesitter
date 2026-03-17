@@ -1,6 +1,8 @@
 package grammargen
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -28,7 +30,7 @@ type dfaTransition struct {
 // whitespace). Visible extras like `comment` should NOT be in skipExtras — they
 // produce tree nodes via shift-extra parse actions.
 // Returns the concatenated LexStates and per-mode start offsets.
-func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, skipExtras map[int]bool, lexModes []lexModeSpec) ([]gotreesitter.LexState, []int, error) {
+func buildLexDFA(ctx context.Context, patterns []TerminalPattern, extraSymbols []int, skipExtras map[int]bool, lexModes []lexModeSpec) ([]gotreesitter.LexState, []int, error) {
 	extraSet := make(map[int]bool)
 	for _, e := range extraSymbols {
 		extraSet[e] = true
@@ -64,7 +66,10 @@ func buildLexDFA(patterns []TerminalPattern, extraSymbols []int, skipExtras map[
 		// Convert NFA to DFA via subset construction. Pass immediateSyms
 		// so the accept logic prefers non-immediate tokens over immediate
 		// ones when both accept in the same DFA state.
-		dfa := subsetConstruction(combined, immediateSyms)
+		dfa, err := subsetConstruction(ctx, combined, immediateSyms)
+		if err != nil {
+			return nil, nil, fmt.Errorf("lex mode %d: %w", mi, err)
+		}
 
 		if len(immediateSyms) > 0 {
 			pruneImmediateTransitions(dfa, immediateSyms)
@@ -244,7 +249,7 @@ func hashIntSlice(vals []int) uint64 {
 }
 
 // subsetConstruction converts an NFA to a DFA using the subset construction algorithm.
-func subsetConstruction(n *nfa, _ ...map[int]bool) []dfaState {
+func subsetConstruction(ctx context.Context, n *nfa, _ ...map[int]bool) ([]dfaState, error) {
 	scratch := newDFASubsetScratch(len(n.states))
 
 	// Compute epsilon closure of start state.
@@ -291,10 +296,21 @@ func subsetConstruction(n *nfa, _ ...map[int]bool) []dfaState {
 
 	addState(startClosure)
 
+	worklistIter := 0
 	for len(worklist) > 0 {
 		current := worklist[0]
 		worklist = worklist[1:]
 		curID := current.id
+
+		// Check for cancellation every 64 iterations.
+		worklistIter++
+		if worklistIter&63 == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("subset construction cancelled after %d DFA states: %w", len(dfaStates), ctx.Err())
+			default:
+			}
+		}
 
 		// Collect all character ranges from transitions of current NFA states.
 		ranges := collectTransitionRanges(n, current.states)
@@ -327,7 +343,7 @@ func subsetConstruction(n *nfa, _ ...map[int]bool) []dfaState {
 		}
 	}
 
-	return dfaStates
+	return dfaStates, nil
 }
 
 // epsilonClosure computes the epsilon closure of a set of NFA states.

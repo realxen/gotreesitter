@@ -571,14 +571,14 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 	)
 
 	skipExtras := computeSkipExtras(ng)
-	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
+	lexStates, lexModeOffsets, err := buildLexDFA(context.Background(), ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
 	if err != nil {
 		return nil, fmt.Errorf("build lex DFA: %w", err)
 	}
 
 	var keywordLexStates []gotreesitter.LexState
 	if len(ng.KeywordEntries) > 0 {
-		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, nil, []lexModeSpec{{
+		kls, _, err := buildLexDFA(context.Background(), ng.KeywordEntries, nil, nil, []lexModeSpec{{
 			validSymbols:   allSymbolsSet(ng.KeywordEntries),
 			skipWhitespace: false,
 		}})
@@ -761,14 +761,14 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 	)
 
 	skipExtras := computeSkipExtras(ng)
-	lexStates, lexModeOffsets, err := buildLexDFA(ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
+	lexStates, lexModeOffsets, err := buildLexDFA(bgCtx, ng.Terminals, ng.ExtraSymbols, skipExtras, lexModes)
 	if err != nil {
 		return nil, fmt.Errorf("build lex DFA: %w", err)
 	}
 
 	var keywordLexStates []gotreesitter.LexState
 	if len(ng.KeywordEntries) > 0 {
-		kls, _, err := buildLexDFA(ng.KeywordEntries, nil, nil, []lexModeSpec{{
+		kls, _, err := buildLexDFA(bgCtx, ng.KeywordEntries, nil, nil, []lexModeSpec{{
 			validSymbols:   allSymbolsSet(ng.KeywordEntries),
 			skipWhitespace: false,
 		}})

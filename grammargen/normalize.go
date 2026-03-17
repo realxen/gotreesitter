@@ -1,6 +1,7 @@
 package grammargen
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -1700,7 +1701,7 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 	b.states[frag.end].accept = 1 // any non-zero accept
 	b.states[frag.end].priority = 0
 
-	dfa := subsetConstruction(&nfa{states: b.states, start: frag.start})
+	dfa, _ := subsetConstruction(context.Background(), &nfa{states: b.states, start: frag.start})
 
 	keywordSet := make(map[int]bool)
 	var keywordSyms []int
