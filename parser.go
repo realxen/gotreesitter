@@ -47,6 +47,7 @@ type Parser struct {
 	smallLookup                         [][]smallActionPair
 	smallTokenLookup                    [][]uint16
 	reduceAliasSeq                      [][]Symbol
+	aliasTargetSymbol                   []bool
 	reduceHasFields                     []bool
 	fieldInheritedScratch               []bool
 	fieldConflictedScratch              []bool
@@ -226,6 +227,7 @@ func NewParser(lang *Language) *Parser {
 			p.smallTokenLookup = buildSmallTokenLookup(lang)
 		}
 		p.reduceAliasSeq = buildReduceAliasSequences(lang)
+		p.aliasTargetSymbol = buildAliasTargetSymbols(lang)
 		p.reduceHasFields = buildReduceFieldPresence(lang)
 		p.recoverByState, p.hasRecoverState, p.hasRecoverSymbol = buildRecoverActionsByState(lang)
 		p.hasKeywordState = buildKeywordStates(lang)
@@ -290,6 +292,12 @@ func resetSnippetParser(parser *Parser) {
 	parser.glrTrace = false
 	parser.timeoutMicros = 0
 	parser.cancellationFlag = nil
+}
+
+// InferredRootSymbol returns the root symbol inferred during parser
+// construction, and whether inference succeeded.
+func (p *Parser) InferredRootSymbol() (Symbol, bool) {
+	return p.rootSymbol, p.hasRootSymbol
 }
 
 // computeMaxConflictWidth scans the parse action table and returns the
@@ -1342,6 +1350,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 
 	needToken := true
 	var tok Token
+	var nextBranchOrder uint64 = 1
 
 	// Per-primary-stack infinite-reduce detection.
 	var lastReduceState StateID
@@ -1643,9 +1652,9 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 				leaf.isExtra = true
 				leaf.preGotoState = currentState
-				leaf.parseState = currentState
+				leaf.parseState = extraShiftTargetState(currentState, actions[0])
 				p.recordCurrentExternalLeafCheckpoint(leaf, tok)
-				p.pushStackNode(s, currentState, leaf, &scratch.entries, &scratch.gss)
+				p.pushStackNode(s, leaf.parseState, leaf, &scratch.entries, &scratch.gss)
 				nodeCount++
 				needToken = true
 				continue
@@ -1673,6 +1682,15 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 						continue
 					}
 					// Zero-symbol width token: skip.
+					needToken = true
+					continue
+				}
+				if tok.StartByte == tok.EndByte {
+					// Layout and recovery helpers can emit zero-width internal
+					// tokens (for example indentation markers). If the current
+					// state cannot act on one, skipping it matches tree-sitter
+					// better than materializing a zero-width error node that can
+					// later corrupt reduce-child counting.
 					needToken = true
 					continue
 				}
@@ -1783,6 +1801,8 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 				}
 				for ai := 1; ai < len(actions); ai++ {
 					fork := base.cloneWithScratch(&scratch.gss)
+					fork.branchOrder = nextBranchOrder
+					nextBranchOrder++
 					act := actions[ai]
 					p.applyAction(&fork, act, tok, &anyReduced, &nodeCount, arena, &scratch.entries, &scratch.gss, &scratch.tmpEntries, deferParentLinks, &trackChildErrors)
 					if p.glrTrace {

@@ -28,6 +28,27 @@ func buildReduceAliasSequences(lang *Language) [][]Symbol {
 	return out
 }
 
+func buildAliasTargetSymbols(lang *Language) []bool {
+	if lang == nil || len(lang.AliasSequences) == 0 {
+		return nil
+	}
+	out := make([]bool, len(lang.SymbolNames))
+	any := false
+	for _, seq := range lang.AliasSequences {
+		for _, sym := range seq {
+			if sym == 0 || int(sym) >= len(out) {
+				continue
+			}
+			out[sym] = true
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return out
+}
+
 func buildReduceFieldPresence(lang *Language) []bool {
 	if lang == nil || len(lang.FieldMapSlices) == 0 {
 		return nil
@@ -194,11 +215,9 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 		if leaf.isExtra && perfCountersEnabled {
 			perfRecordExtraNode()
 		}
-		targetState := act.State
-		if leaf.isExtra {
-			targetState = s.top().state
-		}
-		leaf.preGotoState = s.top().state
+		currentState := s.top().state
+		targetState := extraShiftTargetState(currentState, act)
+		leaf.preGotoState = currentState
 		leaf.parseState = targetState
 		p.recordCurrentExternalLeafCheckpoint(leaf, tok)
 		p.pushStackNode(s, targetState, leaf, entryScratch, gssScratch)
@@ -258,6 +277,13 @@ func (p *Parser) applyAction(s *glrStack, act ParseAction, tok Token, anyReduced
 			fmt.Printf("      -> RECOVER state=%d depth=%d\n", s.top().state, s.depth())
 		}
 	}
+}
+
+func extraShiftTargetState(current StateID, act ParseAction) StateID {
+	if !act.Extra || act.State != 0 {
+		return act.State
+	}
+	return current
 }
 
 func (p *Parser) pushStackNode(s *glrStack, state StateID, node *Node, entryScratch *glrEntryScratch, gssScratch *gssScratch) {
@@ -465,6 +491,9 @@ func (p *Parser) applyReduceActionFromGSS(s *glrStack, act ParseAction, tok Toke
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && reducedEnd > 0 {
 		span := computeReduceRawSpan(windowEntries, 0, reducedEnd)
+		if int(act.Symbol) < len(p.forceRawSpanTable) && p.forceRawSpanTable[act.Symbol] && actualEnd > reducedEnd {
+			extendRawSpanToTrailingEntries(&span, windowEntries, reducedEnd, actualEnd)
+		}
 		parent.startByte = span.startByte
 		parent.endByte = span.endByte
 		parent.startPoint = span.startPoint
@@ -584,6 +613,23 @@ func computeReduceRawSpan(entries []stackEntry, start, end int) reduceRawSpan {
 		span.endPoint = lastRaw.endPoint
 	}
 	return span
+}
+
+func extendRawSpanToTrailingEntries(span *reduceRawSpan, entries []stackEntry, start, end int) {
+	if span == nil || end <= start {
+		return
+	}
+	for i := end - 1; i >= start; i-- {
+		n := entries[i].node
+		if n == nil {
+			continue
+		}
+		if n.endByte > span.endByte {
+			span.endByte = n.endByte
+			span.endPoint = n.endPoint
+		}
+		return
+	}
 }
 
 func shouldUseRawSpanForReduction(sym Symbol, children []*Node, symbolMeta []SymbolMetadata, forceRawSpanAll bool, forceRawSpanTable []bool) bool {
@@ -727,12 +773,7 @@ func isNonSpanExtendingInvisibleSymbol(sym Symbol, symbolNames []string) bool {
 	if idx < 0 || idx >= len(symbolNames) {
 		return false
 	}
-	switch symbolNames[idx] {
-	case "_line_ending_or_eof":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 const (
@@ -1877,6 +1918,9 @@ func (p *Parser) applyReduceAction(s *glrStack, act ParseAction, tok Token, anyR
 	shouldUseRawSpan := shouldUseRawSpanForReduction(act.Symbol, children, p.language.SymbolMetadata, p.forceRawSpanAll, p.forceRawSpanTable)
 	if shouldUseRawSpan && window.reducedEnd > window.start {
 		span := computeReduceRawSpan(entries, window.start, window.reducedEnd)
+		if int(act.Symbol) < len(p.forceRawSpanTable) && p.forceRawSpanTable[act.Symbol] && window.actualEnd > window.reducedEnd {
+			extendRawSpanToTrailingEntries(&span, entries, window.reducedEnd, window.actualEnd)
+		}
 		parent.startByte = span.startByte
 		parent.endByte = span.endByte
 		parent.startPoint = span.startPoint
@@ -1918,7 +1962,7 @@ func (p *Parser) collapsibleUnarySelfReduction(act ParseAction, tok Token, arena
 		return nil
 	}
 	child := children[0]
-	if child == nil || child.symbol != act.Symbol || child.ownerArena != arena || child.parent != nil {
+	if child == nil || child.ownerArena != arena || child.parent != nil {
 		return nil
 	}
 	if start < 0 || start >= len(entries) || entries[start].node != child {
@@ -1927,7 +1971,35 @@ func (p *Parser) collapsibleUnarySelfReduction(act ParseAction, tok Token, arena
 	if p.reduceProductionHasFields(act.ProductionID) || len(p.reduceAliasSequence(act.ProductionID)) != 0 {
 		return nil
 	}
+	if child.symbol != act.Symbol {
+		if child.ChildCount() != 0 || !p.canCollapseNamedLeafWrapper(act.Symbol, child.symbol) {
+			return nil
+		}
+		return aliasedNodeInArena(arena, p.language, child, act.Symbol)
+	}
 	return child
+}
+
+func (p *Parser) canCollapseNamedLeafWrapper(parentSym, childSym Symbol) bool {
+	if p == nil || p.language == nil {
+		return false
+	}
+	if parentSym == childSym {
+		return true
+	}
+	meta := p.language.SymbolMetadata
+	if int(parentSym) >= len(meta) || int(childSym) >= len(meta) {
+		return false
+	}
+	parent := meta[parentSym]
+	child := meta[childSym]
+	if !parent.Visible || !parent.Named {
+		return false
+	}
+	if !child.Visible || child.Named {
+		return false
+	}
+	return parent.Name == child.Name
 }
 
 func recoverAction(entry *ParseActionEntry) (ParseAction, bool) {
@@ -2056,7 +2128,11 @@ func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol)
 
 	if lang != nil {
 		if idx := int(n.symbol); idx < len(lang.SymbolMetadata) && !lang.SymbolMetadata[n.symbol].Visible {
-			n = materializeHiddenNodeForAlias(arena, lang, n)
+			if child := flattenedVisibleAliasTarget(n, lang.SymbolMetadata); child != nil {
+				n = child
+			} else {
+				n = materializeHiddenNodeForAlias(arena, lang, n)
+			}
 		}
 	}
 
@@ -2078,6 +2154,34 @@ func aliasedNodeInArena(arena *nodeArena, lang *Language, n *Node, alias Symbol)
 	}
 	cloned.ownerArena = arena
 	return cloned
+}
+
+func flattenedVisibleAliasTarget(n *Node, symbolMeta []SymbolMetadata) *Node {
+	if n == nil || hiddenTreeHasFieldIDs(n) {
+		return nil
+	}
+	if countFlattenedHiddenChildren(n, symbolMeta) != 1 {
+		return nil
+	}
+	for n != nil {
+		visible := true
+		if idx := int(n.symbol); idx < len(symbolMeta) {
+			visible = symbolMeta[n.symbol].Visible
+		}
+		if visible {
+			return n
+		}
+		var next *Node
+		for _, child := range n.children {
+			if countFlattenedHiddenChildren(child, symbolMeta) == 0 {
+				continue
+			}
+			next = child
+			break
+		}
+		n = next
+	}
+	return nil
 }
 
 func cloneNodeInArena(arena *nodeArena, n *Node) *Node {

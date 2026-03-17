@@ -1,0 +1,2 @@
+emit_grammar_go*.go
+go_grammar*.go

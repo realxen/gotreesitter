@@ -3,16 +3,17 @@ package gotreesitter
 import "bytes"
 
 // buildResultFromGLR picks the best stack and constructs the final tree.
-// Prefers accepted stacks, then highest score, then most entries.
+// Prefers accepted stacks, then highest score, then most entries. When
+// accepted stacks are otherwise tied, prefer the tree that retains an
+// alias-target symbol before falling back to branch order.
 func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nodeArena, oldTree *Tree, reuseState *parseReuseState, linkScratch *[]*Node) *Tree {
 	if len(stacks) == 0 {
 		arena.Release()
 		return parseErrorTree(source, p.language)
 	}
-
 	best := 0
 	for i := 1; i < len(stacks); i++ {
-		if stackComparePtr(&stacks[i], &stacks[best]) > 0 {
+		if stackCompareForResultSelection(p, &stacks[i], &stacks[best]) > 0 {
 			best = i
 		}
 	}
@@ -25,6 +26,152 @@ func (p *Parser) buildResultFromGLR(stacks []glrStack, source []byte, arena *nod
 		return p.buildResult(nil, source, arena, oldTree, reuseState, linkScratch)
 	}
 	return p.buildResultFromNodes(nodesFromGSS(selected.gss), source, arena, oldTree, reuseState, linkScratch)
+}
+
+func stackCompareForResultSelection(p *Parser, a, b *glrStack) int {
+	if a.dead != b.dead {
+		if a.dead {
+			return -1
+		}
+		return 1
+	}
+	if a.accepted != b.accepted {
+		if a.accepted {
+			return 1
+		}
+		return -1
+	}
+	if aErr, bErr := stackErrorRank(a), stackErrorRank(b); aErr != bErr {
+		if aErr < bErr {
+			return 1
+		}
+		return -1
+	}
+	if cmp := compareAcceptedStackAliasPreference(p, *a, *b); cmp != 0 {
+		return cmp
+	}
+	if a.score != b.score {
+		if a.score > b.score {
+			return 1
+		}
+		return -1
+	}
+	if a.shifted != b.shifted {
+		if !a.shifted {
+			return 1
+		}
+		return -1
+	}
+	aDepth := a.depth()
+	bDepth := b.depth()
+	if aDepth != bDepth {
+		if aDepth > bDepth {
+			return 1
+		}
+		return -1
+	}
+	if a.byteOffset != b.byteOffset {
+		if a.byteOffset > b.byteOffset {
+			return 1
+		}
+		return -1
+	}
+	if a.branchOrder != b.branchOrder {
+		if a.branchOrder < b.branchOrder {
+			return 1
+		}
+		return -1
+	}
+	return 0
+}
+
+func compareAcceptedStackAliasPreference(p *Parser, a, b glrStack) int {
+	if p == nil || p.language == nil {
+		return 0
+	}
+	aNodes := resultNodesFromStack(a)
+	bNodes := resultNodesFromStack(b)
+	if len(aNodes) != len(bNodes) {
+		return 0
+	}
+	for i := range aNodes {
+		if cmp := compareNodeAliasPreference(p, aNodes[i], bNodes[i]); cmp != 0 {
+			return cmp
+		}
+	}
+	return 0
+}
+
+func resultNodesFromStack(s glrStack) []*Node {
+	if len(s.entries) > 0 {
+		count := 0
+		for i := range s.entries {
+			if s.entries[i].node != nil {
+				count++
+			}
+		}
+		if count == 0 {
+			return nil
+		}
+		nodes := make([]*Node, 0, count)
+		for i := range s.entries {
+			if s.entries[i].node != nil {
+				nodes = append(nodes, s.entries[i].node)
+			}
+		}
+		return nodes
+	}
+	if s.gss.head == nil {
+		return nil
+	}
+	return nodesFromGSS(s.gss)
+}
+
+func compareNodeAliasPreference(p *Parser, a, b *Node) int {
+	if a == b || a == nil || b == nil {
+		return 0
+	}
+	if a.startByte != b.startByte ||
+		a.endByte != b.endByte ||
+		a.isExtra != b.isExtra ||
+		a.isMissing != b.isMissing ||
+		len(a.children) != len(b.children) {
+		return 0
+	}
+	if a.symbol != b.symbol {
+		aType := a.Type(p.language)
+		bType := b.Type(p.language)
+		if aType == bType {
+			for i := range a.children {
+				if cmp := compareNodeAliasPreference(p, a.children[i], b.children[i]); cmp != 0 {
+					return cmp
+				}
+			}
+			return 0
+		}
+		aAlias := p.isAliasTargetSymbol(a.symbol)
+		bAlias := p.isAliasTargetSymbol(b.symbol)
+		if aAlias != bAlias {
+			if aAlias {
+				return 1
+			}
+			return -1
+		}
+		return 0
+	}
+	for i := range a.children {
+		if cmp := compareNodeAliasPreference(p, a.children[i], b.children[i]); cmp != 0 {
+			return cmp
+		}
+	}
+	return 0
+}
+
+func (p *Parser) isAliasTargetSymbol(sym Symbol) bool {
+	if p == nil || int(sym) >= len(p.aliasTargetSymbol) {
+		return false
+	}
+	return p.aliasTargetSymbol[sym]
 }
 
 // isNamedSymbol checks whether a symbol is a named symbol.
@@ -332,6 +479,11 @@ func (p *Parser) normalizeRootSourceStart(root *Node, source []byte) {
 	root.startByte = 0
 	root.startPoint = Point{}
 }
+
+// maxTreeWalkDepth prevents stack overflow in recursive tree walkers when
+// parsing with grammargen-produced grammars that can create pathologically deep
+// hidden-node chains (e.g. Scala with >1M levels).
+const maxTreeWalkDepth = 5000
 
 // normalizeKnownSpanAttribution applies narrow compatibility fixes where
 // C tree-sitter attributes trailing trivia to a grouped node but this runtime
@@ -4021,9 +4173,9 @@ func normalizeFortranStatementLineBreaks(root *Node, source []byte, lang *Langua
 	if root == nil || lang == nil || lang.Name != "fortran" || len(source) == 0 {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "program" {
@@ -4042,19 +4194,19 @@ func normalizeFortranStatementLineBreaks(root *Node, source []byte, lang *Langua
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeNginxAttributeLineBreaks(root *Node, source []byte, lang *Language) {
 	if root == nil || lang == nil || lang.Name != "nginx" || len(source) == 0 {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "attribute" {
@@ -4063,10 +4215,10 @@ func normalizeNginxAttributeLineBreaks(root *Node, source []byte, lang *Language
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeTopLevelTrailingLineBreakSpan(root *Node, source []byte, lang *Language) {
@@ -9869,17 +10021,17 @@ func normalizeScalaTrailingCommentOwnership(root *Node, source []byte, lang *Lan
 	if root == nil || len(source) == 0 || lang == nil || lang.Name != "scala" {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		normalizeScalaTrailingCommentSiblings(n, source, lang)
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeScalaTrailingCommentSiblings(parent *Node, source []byte, lang *Language) {
@@ -10009,9 +10161,9 @@ func normalizeScalaFunctionModifierFields(root *Node, lang *Language) {
 	if !ok {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "function_definition" {
@@ -10028,19 +10180,19 @@ func normalizeScalaFunctionModifierFields(root *Node, lang *Language) {
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeScalaInterpolatedStringTail(root *Node, source []byte, lang *Language) {
 	if root == nil || len(source) == 0 || lang == nil || lang.Name != "scala" {
 		return
 	}
-	var walk func(*Node)
-	walk = func(n *Node) {
-		if n == nil {
+	var walk func(*Node, int)
+	walk = func(n *Node, depth int) {
+		if n == nil || depth > maxTreeWalkDepth {
 			return
 		}
 		if n.Type(lang) == "interpolated_string_expression" && len(n.children) >= 2 {
@@ -10068,7 +10220,7 @@ func normalizeScalaInterpolatedStringTail(root *Node, source []byte, lang *Langu
 			}
 		}
 		for _, child := range n.children {
-			walk(child)
+			walk(child, depth+1)
 		}
 		if n.Type(lang) == "infix_expression" && len(n.children) > 0 {
 			last := n.children[len(n.children)-1]
@@ -10077,7 +10229,7 @@ func normalizeScalaInterpolatedStringTail(root *Node, source []byte, lang *Langu
 			}
 		}
 	}
-	walk(root)
+	walk(root, 0)
 }
 
 func normalizeScalaSingleLineInterpolatedStringTail(expr *Node, inner *Node, source []byte) {

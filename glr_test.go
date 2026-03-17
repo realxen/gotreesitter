@@ -101,6 +101,40 @@ func TestMergeStacksSmallPathKeepsBestDuplicateAndDistinctKeys(t *testing.T) {
 	}
 }
 
+func TestMergeStacksSmallPathKeepsDistinctDeepStructures(t *testing.T) {
+	makeTop := func(grandchild Symbol) *Node {
+		left := NewLeafNode(grandchild, true, 0, 2, Point{}, Point{Column: 2})
+		right := NewLeafNode(13, true, 2, 5, Point{Column: 2}, Point{Column: 5})
+		mid := NewParentNode(11, true, []*Node{left, right}, nil, 0)
+		return NewParentNode(10, true, []*Node{mid}, nil, 0)
+	}
+
+	s1 := newGLRStack(StateID(5))
+	s1.push(5, makeTop(12), nil, nil)
+
+	s2 := newGLRStack(StateID(5))
+	s2.push(5, makeTop(14), nil, nil)
+
+	result := mergeStacks([]glrStack{s1, s2})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 stacks for distinct deep structures, got %d", len(result))
+	}
+}
+
+func TestStackComparePtrPrefersEarlierBranchOrderOnExactTie(t *testing.T) {
+	a := newGLRStack(StateID(5))
+	b := newGLRStack(StateID(5))
+	a.branchOrder = 1
+	b.branchOrder = 2
+
+	if got := stackComparePtr(&a, &b); got <= 0 {
+		t.Fatalf("stackComparePtr(a,b) = %d, want > 0", got)
+	}
+	if got := stackComparePtr(&b, &a); got >= 0 {
+		t.Fatalf("stackComparePtr(b,a) = %d, want < 0", got)
+	}
+}
+
 func TestGLRStackClone(t *testing.T) {
 	s := newGLRStack(StateID(1))
 	s.push(2, nil, nil, nil)
@@ -482,6 +516,47 @@ func TestMergeKeyGroupsEquivalentStacks(t *testing.T) {
 	}
 	// These may share the same coarse merge key; that's fine because
 	// stackEquivalent still rejects them.
+}
+
+func TestStackEquivalentForAliasLanguageRejectsDeepAliasMismatch(t *testing.T) {
+	lang := &Language{
+		Name:        "go",
+		SymbolCount: 16,
+		SymbolNames: make([]string, 16),
+		AliasSequences: [][]Symbol{
+			{0, 12},
+		},
+	}
+	buildDeepNode := func(leafSym Symbol) *Node {
+		leaf := &Node{symbol: leafSym, startByte: 0, endByte: 5, isNamed: true}
+		n := leaf
+		for sym := Symbol(11); sym >= 4; sym-- {
+			n = &Node{
+				symbol:    sym,
+				startByte: 0,
+				endByte:   5,
+				isNamed:   true,
+				children:  []*Node{n},
+			}
+			if sym == 4 {
+				break
+			}
+		}
+		return &Node{
+			symbol:    3,
+			startByte: 0,
+			endByte:   5,
+			isNamed:   true,
+			children:  []*Node{n},
+		}
+	}
+
+	a := glrStack{entries: []stackEntry{{state: 1}, {state: 2, node: buildDeepNode(10)}}, byteOffset: 5}
+	b := glrStack{entries: []stackEntry{{state: 1}, {state: 2, node: buildDeepNode(12)}}, byteOffset: 5}
+
+	if stackEquivalentForLanguage(lang, a, b) {
+		t.Fatal("expected deep alias mismatch to remain distinct for alias language")
+	}
 }
 
 func TestMergeStacksAllDeadReturnsEmpty(t *testing.T) {

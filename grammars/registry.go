@@ -39,6 +39,66 @@ func Register(entry LangEntry) {
 	highlightInheritanceResolved = false
 }
 
+// RegisterExtension registers a grammargen-based grammar extension with the
+// language registry. This enables detection by file extension, markdown code
+// fence highlighting, and LSP support. The language is generated lazily on
+// first access.
+//
+// Usage from an extension package:
+//
+//	func init() {
+//	    grammars.RegisterExtension(grammars.ExtensionEntry{
+//	        Name:           "danmuji",
+//	        Extensions:     []string{".dmj"},
+//	        Aliases:        []string{"dmj"},
+//	        GenerateLanguage: func() (*gotreesitter.Language, error) {
+//	            return grammargen.GenerateLanguage(danmuji.Grammar())
+//	        },
+//	        HighlightQuery: danmuji.HighlightQueries(),
+//	    })
+//	}
+type ExtensionEntry struct {
+	Name             string
+	Extensions       []string // file extensions: [".dmj", ".dingo", ".fw"]
+	Aliases          []string // markdown fence aliases: ["dmj", "danmuji"]
+	GenerateLanguage func() (*gotreesitter.Language, error)
+	HighlightQuery   string
+}
+
+// RegisterExtension registers a grammar extension for file detection and
+// markdown code fence highlighting.
+func RegisterExtension(ext ExtensionEntry) {
+	var cached *gotreesitter.Language
+	loader := func() *gotreesitter.Language {
+		if cached != nil {
+			return cached
+		}
+		lang, err := ext.GenerateLanguage()
+		if err != nil {
+			return nil
+		}
+		cached = lang
+		return lang
+	}
+
+	Register(LangEntry{
+		Name:           ext.Name,
+		Extensions:     ext.Extensions,
+		Language:       loader,
+		HighlightQuery: ext.HighlightQuery,
+	})
+
+	// Register aliases for markdown fence resolution
+	for _, alias := range ext.Aliases {
+		if alias != ext.Name {
+			extensionAliases[alias] = ext.Name
+		}
+	}
+}
+
+// extensionAliases maps markdown fence aliases to canonical names.
+var extensionAliases = map[string]string{}
+
 // resolveHighlightInheritance composes highlight queries for languages that
 // inherit from a parent. Called lazily on first access.
 func resolveHighlightInheritance() {
@@ -207,6 +267,10 @@ func DetectLanguageByName(name string) *LangEntry {
 	}
 	if grammarName, ok := linguistToGrammar[key]; ok {
 		return lookupByName(grammarName)
+	}
+	// Check extension aliases (e.g., "dmj" → "danmuji", "fw" → "ferrous-wheel")
+	if canonical, ok := extensionAliases[key]; ok {
+		return lookupByName(canonical)
 	}
 	return nil
 }

@@ -37,6 +37,9 @@ type glrStack struct {
 	// mayRecover is true when the stack is known to contain at least one
 	// state that can perform ParseActionRecover for some symbol.
 	mayRecover bool
+	// branchOrder preserves original GLR fork order for exact-tie selection.
+	// Lower values correspond to earlier parse-table actions.
+	branchOrder uint64
 }
 
 const (
@@ -173,6 +176,7 @@ func (s *glrStack) clone() glrStack {
 			cacheEntries: s.cacheEntries,
 			byteOffset:   s.byteOffset,
 			score:        s.score,
+			branchOrder:  s.branchOrder,
 		}
 	}
 	s.ensureGSS(nil)
@@ -181,6 +185,7 @@ func (s *glrStack) clone() glrStack {
 		cacheEntries: s.cacheEntries,
 		byteOffset:   s.byteOffset,
 		score:        s.score,
+		branchOrder:  s.branchOrder,
 	}
 }
 
@@ -191,6 +196,7 @@ func (s *glrStack) cloneWithScratch(scratch *gssScratch) glrStack {
 		cacheEntries: false,
 		byteOffset:   s.byteOffset,
 		score:        s.score,
+		branchOrder:  s.branchOrder,
 	}
 }
 
@@ -441,7 +447,10 @@ func gssStackEntriesEqualForLanguage(lang *Language, gss gssStack, entries []sta
 	return i == -1
 }
 
-const stackEquivalentFrontierDepthLimit = 8
+const (
+	stackEquivalentFrontierDepthLimit        = 8
+	stackEquivalentGenericFrontierDepthLimit = 4
+)
 
 func stackEntryNodesEquivalent(a, b *Node) bool {
 	if a == b {
@@ -467,6 +476,9 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 	if a.hasError && b.hasError {
 		return true
 	}
+	if stackNodeNeedsDeepEquivalent(a) || stackNodeNeedsDeepEquivalent(b) {
+		return stackEntryNodesEquivalentFrontier(a, b, stackEquivalentGenericFrontierDepthLimit)
+	}
 	for i := range a.children {
 		ca := a.children[i]
 		cb := b.children[i]
@@ -489,8 +501,27 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 	return true
 }
 
+func stackNodeNeedsDeepEquivalent(n *Node) bool {
+	if n == nil {
+		return false
+	}
+	if n.isExtra || n.preGotoState != 0 || len(n.fieldIDs) != 0 {
+		return true
+	}
+	for i := range n.children {
+		child := n.children[i]
+		if child == nil {
+			continue
+		}
+		if child.isExtra || child.preGotoState != 0 || len(child.fieldIDs) != 0 || len(child.children) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
-	if lang != nil && (lang.Name == "c_sharp" || lang.Name == "bash") {
+	if lang != nil && (lang.Name == "c_sharp" || lang.Name == "bash" || len(lang.AliasSequences) > 0) {
 		depthLimit := stackEquivalentFrontierDepthLimit
 		if lang.Name == "bash" {
 			if depthLimit < 32 {
@@ -502,7 +533,7 @@ func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
 		if !stackEntryNodesEquivalentFrontier(a, b, depthLimit) {
 			return false
 		}
-		if lang.Name == "bash" {
+		if lang.Name == "bash" || lang.Name != "c_sharp" {
 			return true
 		}
 		if a == nil || b == nil {
@@ -705,6 +736,12 @@ func stackComparePtr(a, b *glrStack) int {
 		}
 		return -1
 	}
+	if a.branchOrder != b.branchOrder {
+		if a.branchOrder < b.branchOrder {
+			return 1
+		}
+		return -1
+	}
 	return 0
 }
 
@@ -749,6 +786,12 @@ func stackCompareMerge(a, b *glrStack) int {
 	}
 	if a.byteOffset != b.byteOffset {
 		if a.byteOffset > b.byteOffset {
+			return 1
+		}
+		return -1
+	}
+	if a.branchOrder != b.branchOrder {
+		if a.branchOrder < b.branchOrder {
 			return 1
 		}
 		return -1

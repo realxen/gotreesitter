@@ -312,6 +312,61 @@ func stopEmbeddedLanguageJanitorLocked() {
 	embeddedLanguageJanitorAlive = false
 }
 
+// LookupExternalScanner returns the registered hand-written external scanner
+// for the given language name (e.g. "python"), or nil if none is registered.
+func LookupExternalScanner(name string) gotreesitter.ExternalScanner {
+	return externalScannerRegistry[name]
+}
+
+// LookupExternalLexStates returns the registered external lex states table
+// for the given language name, or nil if none is registered.
+func LookupExternalLexStates(name string) [][]bool {
+	return externalLexStatesRegistry[name]
+}
+
+// AdaptScannerForLanguage adapts the registered hand-written scanner for the
+// named language to work with a different Language (e.g., one produced by
+// grammargen). It loads the ts2go reference Language to get the scanner's
+// native Symbol IDs, then builds an adapter that remaps them to the target
+// Language's Symbol IDs.
+func AdaptScannerForLanguage(name string, targetLang *gotreesitter.Language) bool {
+	if targetLang == nil || len(targetLang.ExternalSymbols) == 0 {
+		return false
+	}
+
+	refLang := loadEmbeddedLanguage(name + ".bin")
+	if refLang == nil || refLang.ExternalScanner == nil {
+		return false
+	}
+
+	if len(refLang.ExternalSymbols) == len(targetLang.ExternalSymbols) {
+		same := true
+		for i := range refLang.ExternalSymbols {
+			if refLang.ExternalSymbols[i] != targetLang.ExternalSymbols[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			targetLang.ExternalScanner = refLang.ExternalScanner
+			if els := externalLexStatesRegistry[name]; els != nil {
+				targetLang.ExternalLexStates = els
+			}
+			return true
+		}
+	}
+
+	adapted, ok := gotreesitter.AdaptExternalScannerByExternalOrder(refLang, targetLang)
+	if !ok {
+		return false
+	}
+	targetLang.ExternalScanner = adapted
+	if els := externalLexStatesRegistry[name]; els != nil {
+		targetLang.ExternalLexStates = els
+	}
+	return true
+}
+
 func decodeEmbeddedLanguage(blobName string) (*gotreesitter.Language, error) {
 	blob, err := readGrammarBlob(blobName)
 	if err != nil {

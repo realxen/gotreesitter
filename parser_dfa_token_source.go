@@ -92,6 +92,7 @@ func (d *dfaTokenSource) Reset(source []byte) {
 	d.lexer.col = 0
 	if d.language != nil {
 		d.lexer.states = d.language.LexStates
+		d.lexer.immediateTokens = d.language.ImmediateTokens
 	}
 	d.state = 0
 	d.glrStates = nil

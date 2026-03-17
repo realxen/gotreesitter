@@ -34,11 +34,12 @@ func bytesToStringNoCopy(b []byte) string {
 
 // Lexer tokenizes source text using a table-driven DFA.
 type Lexer struct {
-	states []LexState
-	source []byte
-	pos    int
-	row    uint32
-	col    uint32
+	states          []LexState
+	source          []byte
+	pos             int
+	row             uint32
+	col             uint32
+	immediateTokens []bool // symbol IDs that are token.immediate(); rejected after whitespace skip
 }
 
 // NewLexer creates a new Lexer that will tokenize source using the given
@@ -113,6 +114,7 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 	acceptStartCol := uint32(0)
 	acceptSymbol := Symbol(0)
 	acceptSkip := false
+	acceptPriorityBest := int16(32767) // max int16; any real priority beats this
 
 	eofHops := 0
 	// Walk the DFA in the same style as tree-sitter START_LEXER/ADVANCE/SKIP.
@@ -123,19 +125,29 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 		st := &l.states[int(curState)]
 
 		if st.AcceptToken > 0 || st.Skip {
-			acceptPos = scanPos
-			acceptRow = scanRow
-			acceptCol = scanCol
-			acceptStartPos = tokenStartPos
-			acceptStartRow = tokenStartRow
-			acceptStartCol = tokenStartCol
-			acceptSymbol = st.AcceptToken
-			acceptSkip = st.Skip
+			// Reject immediate tokens that matched after whitespace was
+			// consumed. Immediate tokens must match at the original position.
+			isImmediate := st.AcceptToken > 0 && int(st.AcceptToken) < len(l.immediateTokens) && l.immediateTokens[st.AcceptToken]
+			skippedWhitespace := tokenStartPos > startPos
+			if !(isImmediate && skippedWhitespace) {
+				newPrio := st.AcceptPriority
+				if acceptPos < 0 || newPrio < acceptPriorityBest || (newPrio == acceptPriorityBest && scanPos > acceptPos) {
+					acceptPos = scanPos
+					acceptRow = scanRow
+					acceptCol = scanCol
+					acceptStartPos = tokenStartPos
+					acceptStartRow = tokenStartRow
+					acceptStartCol = tokenStartCol
+					acceptSymbol = st.AcceptToken
+					acceptSkip = st.Skip
+					acceptPriorityBest = newPrio
+				}
+			}
 		}
 
 		if scanPos >= len(l.source) {
 			if st.EOF >= 0 && eofHops <= len(l.states) {
-				curState = st.EOF
+				curState = int32(st.EOF)
 				eofHops++
 				continue
 			}
@@ -149,7 +161,7 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 		for i := range st.Transitions {
 			tr := &st.Transitions[i]
 			if r >= tr.Lo && r <= tr.Hi {
-				nextState = tr.NextState
+				nextState = int32(tr.NextState)
 				skipTransition = tr.Skip
 				break
 			}
@@ -157,7 +169,7 @@ func (l *Lexer) scan(startState uint16, startPos int, startRow, startCol uint32)
 		// Default transitions are treated as non-skipping.
 		skipTransition = skipTransition && nextState >= 0
 		if nextState < 0 && st.Default >= 0 {
-			nextState = st.Default
+			nextState = int32(st.Default)
 			skipTransition = false
 		}
 		if nextState < 0 {

@@ -3611,6 +3611,64 @@ func TestCompactAcceptedStacksPreservesAllAcceptedForFinalChoice(t *testing.T) {
 	tree.Release()
 }
 
+func TestBuildResultFromGLRPrefersAliasTargetTreeOnFinalTie(t *testing.T) {
+	lang := &Language{
+		SymbolCount: 4,
+		TokenCount:  1,
+		SymbolNames: []string{"EOF", "identifier", "type_identifier", "root"},
+		SymbolMetadata: []SymbolMetadata{
+			{Name: "EOF"},
+			{Name: "identifier", Visible: true, Named: true},
+			{Name: "type_identifier", Visible: true, Named: true},
+			{Name: "root", Visible: true, Named: true},
+		},
+		AliasSequences: [][]Symbol{
+			{0, 2},
+		},
+	}
+	parser := &Parser{
+		language:          lang,
+		aliasTargetSymbol: buildAliasTargetSymbols(lang),
+	}
+	source := []byte("sudog")
+	arena := acquireNodeArena(arenaClassFull)
+
+	plainLeaf := newLeafNodeInArena(arena, 1, true, 0, 5, Point{}, Point{Column: 5})
+	aliasLeaf := newLeafNodeInArena(arena, 2, true, 0, 5, Point{}, Point{Column: 5})
+	plainRoot := newParentNodeInArena(arena, 3, true, []*Node{plainLeaf}, nil, 0)
+	aliasRoot := newParentNodeInArena(arena, 3, true, []*Node{aliasLeaf}, nil, 0)
+
+	stacks := []glrStack{
+		{
+			accepted:    true,
+			byteOffset:  5,
+			score:       0,
+			branchOrder: 0,
+			entries:     []stackEntry{{state: 1, node: plainRoot}},
+		},
+		{
+			accepted:    true,
+			byteOffset:  5,
+			score:       -1,
+			branchOrder: 1,
+			entries:     []stackEntry{{state: 1, node: aliasRoot}},
+		},
+	}
+
+	tree := parser.buildResultFromGLR(stacks, source, arena, nil, nil, nil)
+	if tree == nil || tree.RootNode() == nil {
+		t.Fatal("buildResultFromGLR returned nil tree/root")
+	}
+	root := tree.RootNode()
+	if got, want := root.Type(lang), "root"; got != want {
+		t.Fatalf("root type = %q, want %q", got, want)
+	}
+	if got, want := root.Child(0).Type(lang), "type_identifier"; got != want {
+		t.Fatalf("child type = %q, want %q", got, want)
+	}
+	tree.Release()
+}
+
 func TestParserLongChain(t *testing.T) {
 	lang := buildArithmeticLanguage()
 	parser := NewParser(lang)
