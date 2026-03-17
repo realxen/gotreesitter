@@ -91,3 +91,9 @@ func decodeLanguageBlob(data []byte) (*gotreesitter.Language, error) {
 	}
 	return &lang, nil
 }
+
+// LoadLanguageBlob deserializes a compressed language blob back into a Language.
+// This is the inverse of the blob encoding used by GenerateLanguage.
+func LoadLanguageBlob(data []byte) (*gotreesitter.Language, error) {
+	return decodeLanguageBlob(data)
+}
