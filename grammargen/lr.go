@@ -2351,8 +2351,6 @@ func resolveActionConflict(lookaheadSym int, actions []lrAction, ng *NormalizedG
 
 		// Apply precedence/associativity resolution when either side has a
 		// non-zero precedence OR the production declares explicit associativity.
-		// PREC_LEFT(0) sets Assoc=AssocLeft with Prec=0; the associativity must
-		// still be respected even though the precedence value is zero.
 		if reducePrec != 0 || shiftPrec != 0 || prod.Assoc != AssocNone {
 			if reducePrec > shiftPrec {
 				return []lrAction{reduce}, nil
