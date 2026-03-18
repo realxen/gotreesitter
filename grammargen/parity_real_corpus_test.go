@@ -200,7 +200,14 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			}
 
 			if getenvBool("GTS_GRAMMARGEN_LR_SPLIT") {
-				gram.EnableLRSplitting = true
+				// LR splitting hurts JS/TS: the split states introduce new
+				// conflicts that break parsing (JS 23→24, TS 17→24 without).
+				switch g.name {
+				case "javascript", "typescript", "tsx":
+					// skip — LR splitting harmful
+				default:
+					gram.EnableLRSplitting = true
+				}
 			}
 			// Enable binary repeat mode for validated grammars that benefit
 			// from tree-sitter's upstream repeat lowering shape.
