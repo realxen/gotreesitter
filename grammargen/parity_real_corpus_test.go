@@ -209,7 +209,8 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 				"csv", "git_rebase", "pem", "eds", "forth", "sql",
 				"comment", "eex", "dot", "todotxt", "ssh_config",
 				"properties", "proto", "requirements", "promql", "json5",
-				"gitattributes", "git_config", "ini":
+				"gitattributes", "git_config", "ini",
+				"python":
 				gram.BinaryRepeatMode = true
 			}
 
