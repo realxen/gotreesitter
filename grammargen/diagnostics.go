@@ -465,7 +465,7 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 	report.Conflicts = diags
 
 	// Run split oracle.
-	oracle := newSplitOracle(diags, prov)
+	oracle := newSplitOracle(diags, prov, tables, ng)
 	report.SplitCandidates = oracle.candidates()
 
 	// Apply local LR(1) rebuild only when explicitly opted in. Splitting
@@ -477,6 +477,14 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 		for _, d := range diags {
 			if d.Resolution == "GLR (multiple actions kept)" {
 				glrBefore++
+			}
+		}
+
+		// Count external-token-motivated candidates.
+		extTokenCandidates := 0
+		for _, c := range report.SplitCandidates {
+			if c.reason == "hidden external token in merged LALR state" {
+				extTokenCandidates++
 			}
 		}
 
@@ -502,7 +510,12 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 		sr.GLRBefore = glrBefore
 		sr.GLRAfter = glrAfter
 
-		if glrAfter >= glrBefore && len(diagsAfter) >= len(diags) {
+		// Allow splits that reduce GLR conflicts, reduce total conflicts,
+		// or fix external token contamination (even without GLR improvement).
+		keepSplit := glrAfter < glrBefore || len(diagsAfter) < len(diags) ||
+			(extTokenCandidates > 0 && splitCount > 0)
+
+		if !keepSplit {
 			// Global rollback: splitting did not reduce GLR conflicts or the
 			// total number of raw conflict sites.
 			// Rebuild the original resolved tables instead of retaining a
@@ -522,7 +535,7 @@ func generateWithReport(g *Grammar, opts reportBuildOptions) (*GenerateReport, e
 		} else {
 			report.Conflicts = diagsAfter
 			// Re-run oracle on new conflicts.
-			oracleAfter := newSplitOracle(diagsAfter, prov)
+			oracleAfter := newSplitOracle(diagsAfter, prov, tables, ng)
 			report.SplitCandidates = oracleAfter.candidates()
 		}
 		report.SplitResult = sr
@@ -696,7 +709,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 	}
 	report.Conflicts = diags
 
-	oracle := newSplitOracle(diags, prov)
+	oracle := newSplitOracle(diags, prov, tables, ng)
 	report.SplitCandidates = oracle.candidates()
 
 	if len(report.SplitCandidates) > 0 && g.EnableLRSplitting {
@@ -704,6 +717,13 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 		for _, d := range diags {
 			if d.Resolution == "GLR (multiple actions kept)" {
 				glrBefore++
+			}
+		}
+
+		extTokenCandidates := 0
+		for _, c := range report.SplitCandidates {
+			if c.reason == "hidden external token in merged LALR state" {
+				extTokenCandidates++
 			}
 		}
 
@@ -727,7 +747,10 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 		sr.GLRBefore = glrBefore
 		sr.GLRAfter = glrAfter
 
-		if glrAfter >= glrBefore && len(diagsAfter) >= len(diags) {
+		keepSplit := glrAfter < glrBefore || len(diagsAfter) < len(diags) ||
+			(extTokenCandidates > 0 && splitCount > 0)
+
+		if !keepSplit {
 			tables, err = buildLRTables(ng)
 			if err != nil {
 				return nil, fmt.Errorf("rebuild LR tables after split rollback: %w", err)
@@ -742,7 +765,7 @@ func generateWithReportCtx(bgCtx context.Context, g *Grammar, opts reportBuildOp
 				len(diags), len(diagsAfter), glrBefore, glrAfter)
 		} else {
 			report.Conflicts = diagsAfter
-			oracleAfter := newSplitOracle(diagsAfter, prov)
+			oracleAfter := newSplitOracle(diagsAfter, prov, tables, ng)
 			report.SplitCandidates = oracleAfter.candidates()
 		}
 		report.SplitResult = sr
