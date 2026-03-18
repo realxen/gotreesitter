@@ -452,7 +452,7 @@ func Normalize(g *Grammar) (*NormalizedGrammar, error) {
 		// an anonymous terminal (e.g. identifier TOKEN colliding with
 		// "identifier" string), we get the named token's symbol ID.
 		wordSymbolID, _ = st.lookupNamedToken(g.Word)
-		keywordSet, keywordSymbols, keywordEntries = identifyKeywords(g, st, stringLiterals)
+		keywordSet, keywordSymbols, keywordEntries = identifyKeywords(g, st, stringLiterals, namedTokens)
 	}
 
 	// Phase 6: Extract terminal patterns for DFA generation.
@@ -1822,9 +1822,14 @@ func extractTerminals(g *Grammar, st *symbolTable, stringLits []string, namedTok
 	}
 
 	// Non-string named tokens: prec-based priority, greedy decides ties.
+	// Skip keywords — they're recognized via the word token + keyword DFA.
 	for _, name := range patternNamedTokens {
 		id, ok := st.lookupNamedToken(name)
 		if !ok {
+			continue
+		}
+		// Skip pattern-based keywords (e.g. COBOL case-insensitive keywords).
+		if keywordSet != nil && keywordSet[id] {
 			continue
 		}
 		rule := g.Rules[name]
@@ -1919,11 +1924,13 @@ func hasLongerStringPrefixPattern(patterns []TerminalPattern, prefix string) boo
 	return false
 }
 
-// identifyKeywords determines which string terminals are keywords.
-// A keyword is a string terminal whose characters all match the word token's
-// pattern. Returns the keyword set, ordered symbol IDs, and terminal patterns
+// identifyKeywords determines which terminals are keywords.
+// A keyword is a terminal whose accepted strings all match the word token's
+// pattern. This includes both string literals (e.g. "if") and pattern-based
+// terminals (e.g. [iI][fF] for case-insensitive keywords like COBOL).
+// Returns the keyword set, ordered symbol IDs, and terminal patterns
 // for keyword DFA construction.
-func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int]bool, []int, []TerminalPattern) {
+func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string, namedTokens []string) (map[int]bool, []int, []TerminalPattern) {
 	wordRule := g.Rules[g.Word]
 	if wordRule == nil {
 		return nil, nil, nil
@@ -1942,7 +1949,7 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 	b.states[frag.end].accept = 1 // any non-zero accept
 	b.states[frag.end].priority = 0
 
-	dfa, _ := subsetConstruction(context.Background(), &nfa{states: b.states, start: frag.start})
+	wordDFA, _ := subsetConstruction(context.Background(), &nfa{states: b.states, start: frag.start})
 
 	keywordSet := make(map[int]bool)
 	var keywordSyms []int
@@ -1956,7 +1963,7 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 		// Treat only identifier-like literals as keyword candidates.
 		// Some grammars have broad `word` tokens that also match punctuation
 		// literals (e.g. //, $$), which should remain regular terminals.
-		if matchesDFA(dfa, s) && isIdentifierLikeKeywordLiteral(s) {
+		if matchesDFA(wordDFA, s) && isIdentifierLikeKeywordLiteral(s) {
 			keywordSet[id] = true
 			keywordSyms = append(keywordSyms, id)
 			// All keyword entries use the same priority (0) so the DFA
@@ -1972,7 +1979,182 @@ func identifyKeywords(g *Grammar, st *symbolTable, stringLits []string) (map[int
 		}
 	}
 
+	// Also check named pattern tokens for keyword candidacy. This handles
+	// grammars like COBOL where keywords are case-insensitive patterns
+	// (e.g. _IDENTIFICATION = [iI][dD][eE]...) rather than string literals.
+	// A pattern terminal is a keyword if every string it accepts is also
+	// accepted by the word token's pattern.
+	for _, name := range namedTokens {
+		// Skip the word token itself.
+		if name == g.Word {
+			continue
+		}
+		rule := g.Rules[name]
+		if rule == nil {
+			continue
+		}
+		// Only consider hidden pattern terminals (starting with "_").
+		// Visible named tokens are nonterminals wrapping productions.
+		if !strings.HasPrefix(name, "_") {
+			continue
+		}
+		// Only consider pure pattern rules (not token() or token.immediate() wrappers,
+		// which may have precedence semantics that matter for lexing).
+		if rule.Kind != RulePattern {
+			continue
+		}
+		id, ok := st.lookupNamedToken(name)
+		if !ok {
+			if id2, ok2 := st.lookup(name); ok2 {
+				id = id2
+			} else {
+				continue
+			}
+		}
+		// Skip if already identified (shouldn't happen, but be safe).
+		if keywordSet[id] {
+			continue
+		}
+		// Build a DFA for this candidate pattern and check if its language
+		// is a subset of the word token's language.
+		candExpanded, err := expandPatternRule(rule.Value)
+		if err != nil {
+			continue
+		}
+		cb := newNFABuilder()
+		candFrag, err := cb.buildFromRule(candExpanded)
+		if err != nil {
+			continue
+		}
+		cb.states[candFrag.end].accept = 1
+		cb.states[candFrag.end].priority = 0
+		candDFA, err := subsetConstruction(context.Background(), &nfa{states: cb.states, start: candFrag.start})
+		if err != nil || len(candDFA) == 0 {
+			continue
+		}
+		if dfaAcceptsSubsetOf(candDFA, wordDFA) {
+			keywordSet[id] = true
+			keywordSyms = append(keywordSyms, id)
+			keywordEntries = append(keywordEntries, TerminalPattern{
+				SymbolID: id,
+				Rule:     candExpanded,
+				Priority: 0,
+			})
+		}
+	}
+
 	return keywordSet, keywordSyms, keywordEntries
+}
+
+// dfaAcceptsSubsetOf checks whether every string accepted by DFA 'candidate'
+// is also accepted by DFA 'word'. Uses a product automaton approach: explores
+// all reachable (candidate_state, word_state) pairs. If any pair is reached
+// where 'candidate' accepts but 'word' does not, returns false.
+// A word_state of -1 means "dead state" (no transition found in word DFA).
+func dfaAcceptsSubsetOf(candidate, word []dfaState) bool {
+	if len(candidate) == 0 {
+		return true
+	}
+	if len(word) == 0 {
+		// Word DFA is empty — candidate can only be a subset if it also accepts nothing.
+		for _, s := range candidate {
+			if s.accept > 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Product state: (candidate state, word state). word state -1 = dead.
+	type pair struct{ c, w int }
+	visited := make(map[pair]bool)
+	stack := []pair{{0, 0}}
+	visited[pair{0, 0}] = true
+
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		// Check accept: if candidate accepts here, word must also accept.
+		if candidate[cur.c].accept > 0 {
+			if cur.w < 0 || word[cur.w].accept == 0 {
+				return false
+			}
+		}
+
+		// Explore transitions from candidate state.
+		for _, ct := range candidate[cur.c].transitions {
+			// For each character in candidate's transition range, find
+			// the corresponding word DFA transition (or dead state).
+			// Since character ranges can overlap partially, split the
+			// candidate range against word transitions.
+			nextC := ct.nextState
+			wTransitions := wordTransitionsForRange(word, cur.w, ct.lo, ct.hi)
+			for _, wt := range wTransitions {
+				next := pair{nextC, wt.nextState}
+				if !visited[next] {
+					visited[next] = true
+					stack = append(stack, next)
+				}
+			}
+		}
+	}
+	return true
+}
+
+// wordTransEntry maps a sub-range to a word DFA next state (-1 = dead).
+type wordTransEntry struct {
+	lo, hi    rune
+	nextState int // -1 = dead
+}
+
+// wordTransitionsForRange returns the word DFA transitions covering the
+// character range [lo, hi]. Each piece of the range maps to either a word
+// DFA state or -1 (dead). If wordState is already -1 (dead), all
+// transitions go to -1.
+func wordTransitionsForRange(word []dfaState, wordState int, lo, hi rune) []wordTransEntry {
+	if wordState < 0 {
+		return []wordTransEntry{{lo, hi, -1}}
+	}
+	var result []wordTransEntry
+	pos := lo
+	for _, wt := range word[wordState].transitions {
+		if wt.hi < pos {
+			continue
+		}
+		if wt.lo > hi {
+			break
+		}
+		// Gap before this word transition: [pos, wt.lo-1] → dead
+		if wt.lo > pos {
+			gapHi := wt.lo - 1
+			if gapHi > hi {
+				gapHi = hi
+			}
+			result = append(result, wordTransEntry{pos, gapHi, -1})
+		}
+		// Overlap: [max(pos, wt.lo), min(hi, wt.hi)] → wt.nextState
+		overlapLo := pos
+		if wt.lo > overlapLo {
+			overlapLo = wt.lo
+		}
+		overlapHi := hi
+		if wt.hi < overlapHi {
+			overlapHi = wt.hi
+		}
+		if overlapLo <= overlapHi {
+			result = append(result, wordTransEntry{overlapLo, overlapHi, wt.nextState})
+		}
+		pos = overlapHi + 1
+		if pos > hi {
+			break
+		}
+	}
+	// Remaining range after all word transitions: dead
+	if pos <= hi {
+		result = append(result, wordTransEntry{pos, hi, -1})
+	}
+	return result
 }
 
 func isIdentifierLikeKeywordLiteral(s string) bool {
