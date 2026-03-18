@@ -205,7 +205,7 @@ func TestMultiGrammarImportRealCorpusParity(t *testing.T) {
 			// Enable binary repeat mode for validated grammars that benefit
 			// from tree-sitter's upstream repeat lowering shape.
 			switch g.name {
-			case "go_lang", "graphql", "json", "regex", "toml", "scheme",
+			case "graphql", "json", "regex", "toml", "scheme",
 				"csv", "git_rebase", "pem", "eds", "forth", "sql",
 				"comment", "eex", "dot", "todotxt", "ssh_config",
 				"properties", "proto", "requirements", "promql", "json5",
