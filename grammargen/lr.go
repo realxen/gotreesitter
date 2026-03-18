@@ -348,6 +348,13 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 	if len(ng.ExternalSymbols) >= 24 {
 		usePreciseExternalBuilder = false
 	}
+	// Very large grammars (>5000 productions) are intractable for the LR(1)
+	// builder even with the precise-state budget: each BFS state expands
+	// hundreds of core items through closureToSet, and reaching the 20K
+	// budget limit takes minutes. Route them directly to LALR.
+	if len(ng.Productions) > 5000 {
+		usePreciseExternalBuilder = false
+	}
 	if os.Getenv("GOT_LR_FORCE_EXTERNAL_LALR") == "1" {
 		usePreciseExternalBuilder = false
 	}
@@ -371,7 +378,9 @@ func buildLRTablesInternal(bgCtx context.Context, ng *NormalizedGrammar, trackPr
 		return nil, ctx, fmt.Errorf("build LR tables: %w", err)
 	}
 
-	const maxRuntimeStateID = int(^uint16(0))
+	// StateID is uint32 in the runtime (expanded from uint16 to support large
+	// grammars like COBOL with 67K states). Cap at uint32 max.
+	const maxRuntimeStateID = int(^uint32(0))
 	if len(itemSets) > maxRuntimeStateID {
 		return nil, ctx, fmt.Errorf("parser state count %d exceeds max representable state id %d", len(itemSets), maxRuntimeStateID)
 	}
