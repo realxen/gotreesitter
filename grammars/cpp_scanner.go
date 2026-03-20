@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_cpp
+
 package grammars
 
 import gotreesitter "github.com/odvcencio/gotreesitter"
@@ -16,10 +18,12 @@ const (
 // CppExternalScanner handles C++ R"delim(...)delim" raw string literals.
 type CppExternalScanner struct{}
 
-func (CppExternalScanner) Create() any                           { return rawStringCreate() }
-func (CppExternalScanner) Destroy(payload any)                   {}
-func (CppExternalScanner) Serialize(payload any, buf []byte) int { return rawStringSerialize(payload, buf) }
-func (CppExternalScanner) Deserialize(payload any, buf []byte)   { rawStringDeserialize(payload, buf) }
+func (CppExternalScanner) Create() any         { return rawStringCreate() }
+func (CppExternalScanner) Destroy(payload any) {}
+func (CppExternalScanner) Serialize(payload any, buf []byte) int {
+	return rawStringSerialize(payload, buf)
+}
+func (CppExternalScanner) Deserialize(payload any, buf []byte) { rawStringDeserialize(payload, buf) }
 
 func (CppExternalScanner) Scan(payload any, lexer *gotreesitter.ExternalLexer, validSymbols []bool) bool {
 	return rawStringScan(payload, lexer, validSymbols,

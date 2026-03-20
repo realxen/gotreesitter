@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_earthfile
+
 package grammars
 
 import gotreesitter "github.com/odvcencio/gotreesitter"
@@ -22,7 +24,7 @@ type earthfileState struct {
 // EarthfileExternalScanner handles indent/dedent for Earthfile.
 type EarthfileExternalScanner struct{}
 
-func (EarthfileExternalScanner) Create() any { return &earthfileState{} }
+func (EarthfileExternalScanner) Create() any         { return &earthfileState{} }
 func (EarthfileExternalScanner) Destroy(payload any) {}
 
 func (EarthfileExternalScanner) Serialize(payload any, buf []byte) int {

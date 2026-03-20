@@ -1,3 +1,5 @@
+//go:build !grammar_subset
+
 package grammars
 
 import "testing"

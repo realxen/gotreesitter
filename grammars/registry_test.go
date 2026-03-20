@@ -169,6 +169,50 @@ func TestAuditParseSupportIncludesRustDFA(t *testing.T) {
 	}
 }
 
+func TestBuiltinLanguagesAdvertiseTS2GoBlobSource(t *testing.T) {
+	entry := DetectLanguage("main.go")
+	if entry == nil {
+		t.Fatal("expected Go language for main.go")
+	}
+	if entry.GrammarSource != GrammarSourceTS2GoBlob {
+		t.Fatalf("Go GrammarSource = %q, want %q", entry.GrammarSource, GrammarSourceTS2GoBlob)
+	}
+}
+
+func TestRegisterExtensionMarksGrammargenSource(t *testing.T) {
+	_ = AllLanguages()
+
+	oldRegistry := append([]LangEntry(nil), registry...)
+	oldResolved := highlightInheritanceResolved
+	oldAliases := make(map[string]string, len(extensionAliases))
+	for k, v := range extensionAliases {
+		oldAliases[k] = v
+	}
+	t.Cleanup(func() {
+		registry = oldRegistry
+		highlightInheritanceResolved = oldResolved
+		extensionAliases = oldAliases
+	})
+
+	RegisterExtension(ExtensionEntry{
+		Name:       "zz_registry_source_extension",
+		Extensions: []string{".zzsrc"},
+		Aliases:    []string{"zzsrc"},
+		GenerateLanguage: func() (*gotreesitter.Language, error) {
+			return nil, nil
+		},
+		HighlightQuery: "(identifier) @variable",
+	})
+
+	entry := DetectLanguage("sample.zzsrc")
+	if entry == nil {
+		t.Fatal("expected extension language to be registered")
+	}
+	if entry.GrammarSource != GrammarSourceGrammargen {
+		t.Fatalf("extension GrammarSource = %q, want %q", entry.GrammarSource, GrammarSourceGrammargen)
+	}
+}
+
 func TestCoreLanguagesHaveCompilableTagsQuery(t *testing.T) {
 	core := []string{
 		"go",
@@ -477,7 +521,7 @@ func TestDisplayNamePopulated(t *testing.T) {
 
 func TestDetectLanguageByNameRoundTrip(t *testing.T) {
 	// Every registered grammar must be resolvable by its own name.
-	for _, entry := range registry {
+	for _, entry := range AllLanguages() {
 		got := DetectLanguageByName(entry.Name)
 		if got == nil {
 			t.Errorf("DetectLanguageByName(%q) = nil, want grammar entry", entry.Name)

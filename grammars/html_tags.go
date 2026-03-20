@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_angular || grammar_subset_astro || grammar_subset_blade || grammar_subset_html || grammar_subset_svelte || grammar_subset_vue
+
 package grammars
 
 import "strings"

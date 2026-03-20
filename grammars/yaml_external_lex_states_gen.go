@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_yaml
+
 // Code generated from tree-sitter-yaml parser.c; DO NOT EDIT.
 // Source: https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-yaml/master/src/parser.c
 

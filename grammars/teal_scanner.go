@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_teal
+
 package grammars
 
 import gotreesitter "github.com/odvcencio/gotreesitter"
@@ -33,7 +35,7 @@ type tealState struct {
 // TealExternalScanner handles Teal/Lua string and comment scanning.
 type TealExternalScanner struct{}
 
-func (TealExternalScanner) Create() any { return &tealState{} }
+func (TealExternalScanner) Create() any         { return &tealState{} }
 func (TealExternalScanner) Destroy(payload any) {}
 
 func (TealExternalScanner) Serialize(payload any, buf []byte) int {

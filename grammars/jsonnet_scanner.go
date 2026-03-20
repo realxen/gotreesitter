@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_jsonnet
+
 package grammars
 
 import (
@@ -30,7 +32,7 @@ type jsonnetState struct {
 // single/double quoted strings and ||| block strings.
 type JsonnetExternalScanner struct{}
 
-func (JsonnetExternalScanner) Create() any { return &jsonnetState{} }
+func (JsonnetExternalScanner) Create() any         { return &jsonnetState{} }
 func (JsonnetExternalScanner) Destroy(payload any) {}
 func (JsonnetExternalScanner) Serialize(payload any, buf []byte) int {
 	s := payload.(*jsonnetState)

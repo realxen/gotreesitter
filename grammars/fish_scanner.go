@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_fish
+
 package grammars
 
 import (
@@ -8,17 +10,17 @@ import (
 
 // External token indexes for the fish grammar.
 const (
-	fishTokConcat       = 0
+	fishTokConcat        = 0
 	fishTokBracketConcat = 1
-	fishTokConcatList   = 2
-	fishTokBeginBrace   = 3
+	fishTokConcatList    = 2
+	fishTokBeginBrace    = 3
 )
 
 const (
-	fishSymConcat       gotreesitter.Symbol = 53
+	fishSymConcat        gotreesitter.Symbol = 53
 	fishSymBracketConcat gotreesitter.Symbol = 54
-	fishSymConcatList   gotreesitter.Symbol = 55
-	fishSymBeginBrace   gotreesitter.Symbol = 56
+	fishSymConcatList    gotreesitter.Symbol = 55
+	fishSymBeginBrace    gotreesitter.Symbol = 56
 )
 
 // FishExternalScanner handles concatenation detection and begin-brace

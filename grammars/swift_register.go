@@ -1,3 +1,5 @@
+//go:build legacy_generated_register_stubs
+
 package grammars
 
 func init() {

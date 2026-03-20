@@ -1,14 +1,27 @@
-// Package grammars provides 206 embedded tree-sitter grammars as compressed
-// binary blobs with lazy loading. Use AllLanguages to enumerate available
-// grammars, DetectLanguage to match by file extension or shebang, or call
-// individual language functions (e.g. GoLanguage()) for direct access.
+// Package grammars provides built-in and extension tree-sitter grammars with
+// lazy loading. Most built-in grammars are currently shipped as compressed
+// ts2go blobs, while extension grammars can come from grammargen-generated
+// loaders. Use AllLanguages to enumerate available grammars, DetectLanguage to
+// match by file extension or shebang, or call individual language functions
+// (e.g. GoLanguage()) for direct access.
 package grammars
 
 import (
 	"path"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/odvcencio/gotreesitter"
+)
+
+// GrammarSource describes where a LangEntry's language loader comes from.
+type GrammarSource string
+
+const (
+	GrammarSourceUnknown    GrammarSource = "unknown"
+	GrammarSourceTS2GoBlob  GrammarSource = "ts2go_blob"
+	GrammarSourceGrammargen GrammarSource = "grammargen"
 )
 
 // LangEntry holds a registered language with its grammar, extensions, and highlight query.
@@ -17,6 +30,7 @@ type LangEntry struct {
 	Extensions         []string                      // e.g. [".go", ".mod"]
 	Shebangs           []string                      // e.g. ["#!/usr/bin/env python"]
 	Language           func() *gotreesitter.Language // lazy loader
+	GrammarSource      GrammarSource                 // e.g. ts2go blob or grammargen
 	HighlightQuery     string
 	InheritHighlights  string                                                                 // language name to inherit highlight queries from (e.g. "javascript" for TypeScript)
 	TagsQuery          string                                                                 // tree-sitter tags.scm query for symbol extraction
@@ -27,11 +41,32 @@ type LangEntry struct {
 var registry []LangEntry
 var highlightInheritanceResolved bool
 
+var (
+	builtinRegistryOnce sync.Once
+	builtinRegistryBusy atomic.Bool
+)
+
+func ensureBuiltinLanguagesRegistered() {
+	builtinRegistryOnce.Do(func() {
+		builtinRegistryBusy.Store(true)
+		defer func() {
+			builtinRegistryBusy.Store(false)
+		}()
+		registerBuiltinLanguages()
+	})
+}
+
 // Register adds a language to the registry. If an entry with the same name
 // already exists, it is replaced so that grammar updates take effect.
 func Register(entry LangEntry) {
+	if !builtinRegistryBusy.Load() {
+		ensureBuiltinLanguagesRegistered()
+	}
 	if !languageEnabled(entry.Name) {
 		return
+	}
+	if entry.GrammarSource == "" {
+		entry.GrammarSource = GrammarSourceUnknown
 	}
 	if entry.TokenSourceFactory == nil {
 		entry.TokenSourceFactory = defaultTokenSourceFactory(entry.Name)
@@ -93,7 +128,8 @@ func RegisterExtension(ext ExtensionEntry) {
 	Register(LangEntry{
 		Name:              ext.Name,
 		Extensions:        ext.Extensions,
-		Language:           loader,
+		Language:          loader,
+		GrammarSource:     GrammarSourceGrammargen,
 		HighlightQuery:    ext.HighlightQuery,
 		InheritHighlights: ext.InheritHighlights,
 	})
@@ -112,6 +148,7 @@ var extensionAliases = map[string]string{}
 // resolveHighlightInheritance composes highlight queries for languages that
 // inherit from a parent. Called lazily on first access.
 func resolveHighlightInheritance() {
+	ensureBuiltinLanguagesRegistered()
 	if highlightInheritanceResolved {
 		return
 	}

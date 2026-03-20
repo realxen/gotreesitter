@@ -1,18 +1,20 @@
+//go:build !grammar_subset || grammar_subset_kdl
+
 package grammars
 
 import gotreesitter "github.com/odvcencio/gotreesitter"
 
 // External token indexes for the kdl grammar.
 const (
-	kdlTokEof             = 0
+	kdlTokEof              = 0
 	kdlTokMultiLineComment = 1
-	kdlTokRawString       = 2
+	kdlTokRawString        = 2
 )
 
 const (
-	kdlSymEof             gotreesitter.Symbol = 81
+	kdlSymEof              gotreesitter.Symbol = 81
 	kdlSymMultiLineComment gotreesitter.Symbol = 82
-	kdlSymRawString       gotreesitter.Symbol = 83
+	kdlSymRawString        gotreesitter.Symbol = 83
 )
 
 // KdlExternalScanner handles EOF detection, nestable /* */ comments,

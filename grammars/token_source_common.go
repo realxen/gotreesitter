@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_authzed || grammar_subset_c || grammar_subset_cpp || grammar_subset_go || grammar_subset_html || grammar_subset_java || grammar_subset_json || grammar_subset_lua || grammar_subset_toml
+
 package grammars
 
 import (
@@ -217,6 +219,27 @@ type tokenLookup struct {
 
 func newTokenLookup(lang *gotreesitter.Language, lexerName string) *tokenLookup {
 	return &tokenLookup{lang: lang, lexerName: lexerName}
+}
+
+type tokenSourceInitError struct {
+	sourceLen uint32
+}
+
+func (e tokenSourceInitError) Next() gotreesitter.Token {
+	return gotreesitter.Token{
+		StartByte: e.sourceLen,
+		EndByte:   e.sourceLen,
+	}
+}
+
+func (e tokenSourceInitError) SkipToByte(offset uint32) gotreesitter.Token {
+	if offset > e.sourceLen {
+		offset = e.sourceLen
+	}
+	return gotreesitter.Token{
+		StartByte: offset,
+		EndByte:   offset,
+	}
 }
 
 func (tl *tokenLookup) require(name string) gotreesitter.Symbol {

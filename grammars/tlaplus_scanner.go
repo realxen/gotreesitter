@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_tlaplus
+
 package grammars
 
 import (
@@ -1861,7 +1863,7 @@ func (ns *tlaNestedScanner) serialize() []byte {
 	currentBytes := ns.currentContext.serialize()
 
 	// Pre-compute total size
-	totalSize := 2 // context_depth
+	totalSize := 2                     // context_depth
 	totalSize += int(contextDepth) * 4 // context sizes (uint32 each, matching C's unsigned)
 	for _, ctx := range ns.enclosingContexts {
 		totalSize += len(ctx)

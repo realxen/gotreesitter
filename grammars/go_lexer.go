@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_go
+
 package grammars
 
 import (
@@ -110,27 +112,6 @@ func NewGoTokenSource(src []byte, lang *gotreesitter.Language) (*GoTokenSource, 
 	}
 	ts.Reset(src)
 	return ts, nil
-}
-
-type tokenSourceInitError struct {
-	sourceLen uint32
-}
-
-func (e tokenSourceInitError) Next() gotreesitter.Token {
-	return gotreesitter.Token{
-		StartByte: e.sourceLen,
-		EndByte:   e.sourceLen,
-	}
-}
-
-func (e tokenSourceInitError) SkipToByte(offset uint32) gotreesitter.Token {
-	if offset > e.sourceLen {
-		offset = e.sourceLen
-	}
-	return gotreesitter.Token{
-		StartByte: offset,
-		EndByte:   offset,
-	}
 }
 
 // NewGoTokenSourceOrEOF returns a token source for callers that cannot surface

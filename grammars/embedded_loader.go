@@ -79,6 +79,16 @@ func init() {
 }
 
 func loadEmbeddedLanguage(blobName string) *gotreesitter.Language {
+	name := strings.TrimSuffix(blobName, ".bin")
+	if name != "" && name != blobName {
+		if lang := loadPreferredLanguageOverride(name); lang != nil {
+			return lang
+		}
+	}
+	return loadEmbeddedLanguageBase(blobName)
+}
+
+func loadEmbeddedLanguageBase(blobName string) *gotreesitter.Language {
 	entry := getEmbeddedLanguageCacheEntry(blobName)
 	entry.once.Do(func() {
 		entry.lang, entry.err = decodeEmbeddedLanguage(blobName)
@@ -229,6 +239,7 @@ func PurgeEmbeddedLanguageCache() int {
 	count := len(embeddedLanguageCache)
 	embeddedLanguageCache = map[string]*embeddedLanguageCacheEntry{}
 	embeddedLanguageLRU.Init()
+	purgePreferredLanguageOverrideCache()
 	return count
 }
 
@@ -334,7 +345,10 @@ func AdaptScannerForLanguage(name string, targetLang *gotreesitter.Language) boo
 		return false
 	}
 
-	refLang := loadEmbeddedLanguage(name + ".bin")
+	// Scanner adaptation needs the checked-in ts2go blob as the stable symbol
+	// oracle. Do not route this through override lookup or we can recurse back
+	// into the same override currently being decoded.
+	refLang := loadEmbeddedLanguageBase(name + ".bin")
 	if refLang == nil || refLang.ExternalScanner == nil {
 		return false
 	}
@@ -374,7 +388,11 @@ func decodeEmbeddedLanguage(blobName string) (*gotreesitter.Language, error) {
 	}
 	defer blob.close()
 
-	gzr, err := gzip.NewReader(bytes.NewReader(blob.data))
+	return decodeLanguageBlobData(blobName, blob.data)
+}
+
+func decodeLanguageBlobData(blobName string, data []byte) (*gotreesitter.Language, error) {
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("open gzip grammar blob %q: %w", blobName, err)
 	}
@@ -390,6 +408,14 @@ func decodeEmbeddedLanguage(blobName string) (*gotreesitter.Language, error) {
 	repairNoLookaheadLexModes(&lang)
 
 	return &lang, nil
+}
+
+func decodeLanguageBlobFromPath(path string) (*gotreesitter.Language, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read grammar blob %q: %w", path, err)
+	}
+	return decodeLanguageBlobData(path, data)
 }
 
 func repairNoLookaheadLexModes(lang *gotreesitter.Language) {

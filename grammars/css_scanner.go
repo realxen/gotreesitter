@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_css
+
 package grammars
 
 import (

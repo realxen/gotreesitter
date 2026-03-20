@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_arduino || grammar_subset_cpp || grammar_subset_cuda || grammar_subset_hlsl
+
 package grammars
 
 import (

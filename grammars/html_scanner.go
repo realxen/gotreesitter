@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_html
+
 package grammars
 
 import gotreesitter "github.com/odvcencio/gotreesitter"

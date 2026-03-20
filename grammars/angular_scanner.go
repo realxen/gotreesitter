@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_angular
+
 package grammars
 
 import (
@@ -44,7 +46,7 @@ type angularState struct {
 // AngularExternalScanner handles HTML tag tracking plus Angular-specific interpolation for Angular templates.
 type AngularExternalScanner struct{}
 
-func (AngularExternalScanner) Create() any { return &angularState{} }
+func (AngularExternalScanner) Create() any         { return &angularState{} }
 func (AngularExternalScanner) Destroy(payload any) {}
 
 func (AngularExternalScanner) Serialize(payload any, buf []byte) int {

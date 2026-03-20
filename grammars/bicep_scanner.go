@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_bicep
+
 package grammars
 
 import (
@@ -26,7 +28,7 @@ type bicepState struct {
 // triple-single-quote multiline strings for Bicep.
 type BicepExternalScanner struct{}
 
-func (BicepExternalScanner) Create() any { return &bicepState{} }
+func (BicepExternalScanner) Create() any         { return &bicepState{} }
 func (BicepExternalScanner) Destroy(payload any) {}
 func (BicepExternalScanner) Serialize(payload any, buf []byte) int {
 	s := payload.(*bicepState)

@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_luau
+
 package grammars
 
 import (
@@ -35,7 +37,7 @@ type luauState struct {
 // and block/quoted strings for Luau.
 type LuauExternalScanner struct{}
 
-func (LuauExternalScanner) Create() any { return &luauState{} }
+func (LuauExternalScanner) Create() any         { return &luauState{} }
 func (LuauExternalScanner) Destroy(payload any) {}
 func (LuauExternalScanner) Serialize(payload any, buf []byte) int {
 	s := payload.(*luauState)

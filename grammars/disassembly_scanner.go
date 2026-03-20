@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_disassembly
+
 package grammars
 
 import (
@@ -8,9 +10,9 @@ import (
 
 // External token indexes for the Disassembly grammar.
 const (
-	disasmTokCodeIdent  = 0
-	disasmTokInstruction = 1
-	disasmTokMemoryDump = 2
+	disasmTokCodeIdent     = 0
+	disasmTokInstruction   = 1
+	disasmTokMemoryDump    = 2
 	disasmTokErrorSentinel = 3
 )
 
@@ -28,8 +30,8 @@ type disasmState struct {
 // DisassemblyExternalScanner handles assembly instruction vs memory dump disambiguation.
 type DisassemblyExternalScanner struct{}
 
-func (DisassemblyExternalScanner) Create() any { return &disasmState{} }
-func (DisassemblyExternalScanner) Destroy(payload any) {}
+func (DisassemblyExternalScanner) Create() any                           { return &disasmState{} }
+func (DisassemblyExternalScanner) Destroy(payload any)                   {}
 func (DisassemblyExternalScanner) Serialize(payload any, buf []byte) int { return 0 }
 func (DisassemblyExternalScanner) Deserialize(payload any, buf []byte) {
 	s := payload.(*disasmState)

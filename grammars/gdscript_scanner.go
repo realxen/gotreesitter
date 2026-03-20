@@ -1,3 +1,5 @@
+//go:build !grammar_subset || grammar_subset_gdscript
+
 package grammars
 
 import (

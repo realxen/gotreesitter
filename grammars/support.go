@@ -104,38 +104,3 @@ func AuditParseSupport() []ParseSupport {
 	})
 	return reports
 }
-
-func defaultTokenSourceFactory(name string) func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-	switch name {
-	case "authzed":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewAuthzedTokenSourceOrEOF(src, lang)
-		}
-	case "c":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewCTokenSourceOrEOF(src, lang)
-		}
-	case "cpp":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewCTokenSourceOrEOF(src, lang)
-		}
-	case "go":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewGoTokenSourceOrEOF(src, lang)
-		}
-	case "java":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewJavaTokenSourceOrEOF(src, lang)
-		}
-	case "json":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewJSONTokenSourceOrEOF(src, lang)
-		}
-	case "lua":
-		return func(src []byte, lang *gotreesitter.Language) gotreesitter.TokenSource {
-			return NewLuaTokenSourceOrEOF(src, lang)
-		}
-	default:
-		return nil
-	}
-}
