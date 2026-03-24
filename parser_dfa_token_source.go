@@ -3,7 +3,6 @@ package gotreesitter
 import (
 	"bytes"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 )
@@ -53,18 +52,8 @@ const maxConsecutiveZeroWidthTokensRepeatableExternal = 4096
 const noLookaheadLexState = ^uint16(0)
 const externalScannerSerializationBufferSize = 4096
 
-var dfaTokenSourcePool = sync.Pool{
-	New: func() any {
-		return &dfaTokenSource{
-			extZeroPos:   -1,
-			zeroWidthPos: -1,
-		}
-	},
-}
-
 func acquireDFATokenSource(lexer *Lexer, language *Language, lookupActionIndex func(state StateID, sym Symbol) uint16, hasKeywordState []bool) *dfaTokenSource {
-	ts := dfaTokenSourcePool.Get().(*dfaTokenSource)
-	*ts = dfaTokenSource{
+	ts := &dfaTokenSource{
 		extZeroPos:   -1,
 		zeroWidthPos: -1,
 	}
@@ -133,7 +122,6 @@ func (d *dfaTokenSource) Close() {
 		d.lastExternalTokenStartByte = 0
 		d.lastExternalTokenEndByte = 0
 		d.lastExternalTokenValid = false
-		dfaTokenSourcePool.Put(d)
 		return
 	}
 	d.language.ExternalScanner.Destroy(d.externalPayload)
@@ -150,7 +138,6 @@ func (d *dfaTokenSource) Close() {
 	d.lastExternalTokenStartByte = 0
 	d.lastExternalTokenEndByte = 0
 	d.lastExternalTokenValid = false
-	dfaTokenSourcePool.Put(d)
 }
 
 // DebugDFA enables trace logging for DFA token production.

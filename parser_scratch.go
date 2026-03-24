@@ -1,7 +1,5 @@
 package gotreesitter
 
-import "sync"
-
 type parserScratch struct {
 	merge       glrMergeScratch
 	entries     glrEntryScratch
@@ -18,14 +16,8 @@ type parserScratch struct {
 	budgetBytes int64
 }
 
-var parserScratchPool = sync.Pool{
-	New: func() any {
-		return &parserScratch{}
-	},
-}
-
 func acquireParserScratch() *parserScratch {
-	return parserScratchPool.Get().(*parserScratch)
+	return &parserScratch{}
 }
 
 func (s *parserScratch) setBudget(bytes int64) {
@@ -130,5 +122,4 @@ func releaseParserScratch(s *parserScratch, skipGSSClear bool) {
 	s.gss.reset()
 	s.audit.reset()
 	s.clearBudget()
-	parserScratchPool.Put(s)
 }
