@@ -8,6 +8,9 @@ import (
 )
 
 func TestScalaPathResolverRecoversTopLevelObjectAndClass(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skip heavyweight Scala PathResolver realworld parse under -race; non-race coverage keeps the full recovery assertions")
+	}
 	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/scala/medium__PathResolver.scala")
 
 	tree, lang := parseByLanguageName(t, "scala", string(src))
@@ -290,6 +293,9 @@ func TestScalaPathResolverRecoversTopLevelObjectAndClass(t *testing.T) {
 }
 
 func TestScalaPathResolverSimpleImportDotsUsePathField(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skip heavyweight Scala PathResolver realworld parse under -race; smaller Scala tests still cover field normalization")
+	}
 	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/scala/medium__PathResolver.scala")
 
 	tree, lang := parseByLanguageName(t, "scala", string(src))
@@ -323,6 +329,9 @@ func TestScalaPathResolverSimpleImportDotsUsePathField(t *testing.T) {
 }
 
 func TestScalaPathResolverNamespaceSelectorDotDoesNotUsePathField(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skip heavyweight Scala PathResolver realworld parse under -race; smaller Scala tests still cover field normalization")
+	}
 	src := readRealworldCorpusOrSkip(t, "cgo_harness/corpus_real/scala/medium__PathResolver.scala")
 
 	tree, lang := parseByLanguageName(t, "scala", string(src))

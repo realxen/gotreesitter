@@ -2482,6 +2482,9 @@ func TestLoxGrammar(t *testing.T) {
 }
 
 func TestLoxEmbeddedTests(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skip duplicate Lox embedded tests under -race; TestLoxGrammar still covers Lox parsing")
+	}
 	g := LoxGrammar()
 	if err := RunTests(g); err != nil {
 		t.Fatal(err)
@@ -2593,6 +2596,9 @@ func TestBlobRoundTrip(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if raceEnabled && tc.name == "Lox" {
+				t.Skip("skip heavyweight Lox blob round-trip under -race; other grammars still cover the pipeline")
+			}
 			g := tc.grammar()
 
 			// Generate directly.
@@ -2694,6 +2700,9 @@ func TestGenerateCAuthoredGrammars(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if raceEnabled && tc.name == "Lox" {
+				t.Skip("skip heavyweight Lox C generation under -race; INI and Mustache still cover authored codegen")
+			}
 			cCode, err := GenerateC(tc.grammar())
 			if err != nil {
 				t.Fatalf("GenerateC failed: %v", err)

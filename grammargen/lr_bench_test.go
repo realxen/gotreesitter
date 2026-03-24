@@ -55,6 +55,9 @@ func TestLRGenerationScaling(t *testing.T) {
 
 	for _, g := range grammars {
 		t.Run(g.name, func(t *testing.T) {
+			if raceEnabled && g.name == "lox" {
+				t.Skip("skip heavyweight Lox LALR state build under -race; non-race coverage keeps the full case")
+			}
 			gram := g.fn()
 			ng, err := Normalize(gram)
 			if err != nil {
@@ -139,6 +142,9 @@ func TestLALRBuildsStates(t *testing.T) {
 
 	for _, g := range grammars {
 		t.Run(g.name, func(t *testing.T) {
+			if raceEnabled && g.name == "lox" {
+				t.Skip("skip heavyweight Lox LALR state build under -race; non-race coverage keeps the full case")
+			}
 			gram := g.fn()
 			ng, err := Normalize(gram)
 			if err != nil {
