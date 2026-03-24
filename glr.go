@@ -448,8 +448,9 @@ func gssStackEntriesEqualForLanguage(lang *Language, gss gssStack, entries []sta
 }
 
 const (
-	stackEquivalentFrontierDepthLimit        = 8
-	stackEquivalentGenericFrontierDepthLimit = 4
+	stackEquivalentFrontierDepthLimit        = 3
+	stackEquivalentGenericFrontierDepthLimit = 2
+	stackFrontierWorkBudget                  = 512
 )
 
 func stackEntryNodesEquivalent(a, b *Node) bool {
@@ -477,7 +478,8 @@ func stackEntryNodesEquivalent(a, b *Node) bool {
 		return true
 	}
 	if stackNodeNeedsDeepEquivalent(a) || stackNodeNeedsDeepEquivalent(b) {
-		return stackEntryNodesEquivalentFrontier(a, b, stackEquivalentGenericFrontierDepthLimit)
+		budget := stackFrontierWorkBudget
+		return stackEntryNodesEquivalentFrontierBudget(a, b, stackEquivalentGenericFrontierDepthLimit, &budget)
 	}
 	for i := range a.children {
 		ca := a.children[i]
@@ -521,19 +523,18 @@ func stackNodeNeedsDeepEquivalent(n *Node) bool {
 }
 
 func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
-	if lang != nil && (lang.Name == "c_sharp" || lang.Name == "bash" || len(lang.AliasSequences) > 0) {
+	if lang != nil && (lang.Name == "c_sharp" || lang.Name == "bash") {
 		depthLimit := stackEquivalentFrontierDepthLimit
 		if lang.Name == "bash" {
-			if depthLimit < 32 {
-				depthLimit = 32
+			if depthLimit < 8 {
+				depthLimit = 8
 			}
-		} else if depthLimit < 10 {
-			depthLimit = 10
 		}
-		if !stackEntryNodesEquivalentFrontier(a, b, depthLimit) {
+		budget := stackFrontierWorkBudget
+		if !stackEntryNodesEquivalentFrontierBudget(a, b, depthLimit, &budget) {
 			return false
 		}
-		if lang.Name == "bash" || lang.Name != "c_sharp" {
+		if lang.Name == "bash" {
 			return true
 		}
 		if a == nil || b == nil {
@@ -546,7 +547,7 @@ func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
 				if child == nil || child.isExtra || (!child.isNamed && len(child.children) == 0) {
 					continue
 				}
-				if !stackEntryNodesEquivalentFrontier(child, b.children[i], depthLimit-1) {
+				if !stackEntryNodesEquivalentFrontierBudget(child, b.children[i], depthLimit-1, &budget) {
 					return false
 				}
 				compared++
@@ -559,7 +560,7 @@ func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
 				if child == nil || child.isExtra || (!child.isNamed && len(child.children) == 0) {
 					continue
 				}
-				if !stackEntryNodesEquivalentFrontier(child, b.children[i], depthLimit-1) {
+				if !stackEntryNodesEquivalentFrontierBudget(child, b.children[i], depthLimit-1, &budget) {
 					return false
 				}
 				compared++
@@ -571,10 +572,18 @@ func stackEntryNodesEquivalentForLanguage(lang *Language, a, b *Node) bool {
 }
 
 func stackEntryNodesEquivalentFrontier(a, b *Node, depth int) bool {
+	budget := stackFrontierWorkBudget
+	return stackEntryNodesEquivalentFrontierBudget(a, b, depth, &budget)
+}
+
+func stackEntryNodesEquivalentFrontierBudget(a, b *Node, depth int, budget *int) bool {
 	if a == b {
 		return true
 	}
 	if a == nil || b == nil {
+		return false
+	}
+	if *budget <= 0 {
 		return false
 	}
 	if a.symbol != b.symbol {
@@ -606,6 +615,10 @@ func stackEntryNodesEquivalentFrontier(a, b *Node, depth int) bool {
 
 	frontier := -1
 	for i := range a.children {
+		*budget--
+		if *budget <= 0 {
+			return false
+		}
 		ca := a.children[i]
 		cb := b.children[i]
 		if ca == cb {
@@ -678,7 +691,7 @@ func stackEntryNodesEquivalentFrontier(a, b *Node, depth int) bool {
 	}
 	for i := 0; i < candidateCount; i++ {
 		idx := candidates[i]
-		if !stackEntryNodesEquivalentFrontier(a.children[idx], b.children[idx], depth-1) {
+		if !stackEntryNodesEquivalentFrontierBudget(a.children[idx], b.children[idx], depth-1, budget) {
 			return false
 		}
 	}

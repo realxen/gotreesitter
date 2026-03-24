@@ -520,7 +520,7 @@ func TestMergeKeyGroupsEquivalentStacks(t *testing.T) {
 
 func TestStackEquivalentForAliasLanguageRejectsDeepAliasMismatch(t *testing.T) {
 	lang := &Language{
-		Name:        "go",
+		Name:        "c_sharp",
 		SymbolCount: 16,
 		SymbolNames: make([]string, 16),
 		AliasSequences: [][]Symbol{
@@ -529,25 +529,19 @@ func TestStackEquivalentForAliasLanguageRejectsDeepAliasMismatch(t *testing.T) {
 	}
 	buildDeepNode := func(leafSym Symbol) *Node {
 		leaf := &Node{symbol: leafSym, startByte: 0, endByte: 5, isNamed: true}
-		n := leaf
-		for sym := Symbol(11); sym >= 4; sym-- {
-			n = &Node{
-				symbol:    sym,
-				startByte: 0,
-				endByte:   5,
-				isNamed:   true,
-				children:  []*Node{n},
-			}
-			if sym == 4 {
-				break
-			}
+		mid := &Node{
+			symbol:    5,
+			startByte: 0,
+			endByte:   5,
+			isNamed:   true,
+			children:  []*Node{leaf},
 		}
 		return &Node{
 			symbol:    3,
 			startByte: 0,
 			endByte:   5,
 			isNamed:   true,
-			children:  []*Node{n},
+			children:  []*Node{mid},
 		}
 	}
 

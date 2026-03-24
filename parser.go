@@ -57,6 +57,7 @@ type Parser struct {
 	currentExternalTokenCheckpointStart uint32
 	currentExternalTokenCheckpointEnd   uint32
 	currentExternalTokenCheckpointValid bool
+	scratch                             parserScratch
 }
 
 var snippetParserPools sync.Map
@@ -1130,7 +1131,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	if closer, ok := ts.(interface{ Close() }); ok {
 		defer closer.Close()
 	}
-	scratch := acquireParserScratch()
+	scratch := &p.scratch
 	if deferParentLinks {
 		scratch.gss.initialCap = p.fullGSSHintCapacity()
 	} else {
