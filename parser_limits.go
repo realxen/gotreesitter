@@ -6,6 +6,28 @@ func parseIterations(sourceLen int) int {
 	return max(10_000, sourceLen*30)
 }
 
+// parseIterationsForLanguage returns the iteration limit for a specific
+// language. Languages whose grammars parse block comments (or similar
+// constructs) character-by-character at the parser level require a higher
+// per-byte budget because each character inside the production generates
+// multiple GLR iterations.
+func parseIterationsForLanguage(sourceLen int, langName string) int {
+	base := parseIterations(sourceLen)
+	switch langName {
+	case "scala":
+		// Scala's block_comment is a recursive parser-level production (to
+		// support nested /* ... */ comments). Each character inside a block
+		// comment generates ~18 GLR iterations with the default GLR stack
+		// budget. Files with large license headers (common in OSS projects)
+		// exhaust the default 30x budget well before the parser reaches real
+		// code. The 300k floor matches the node-limit floor and covers small
+		// files with high comment-to-code ratios. The 7x per-byte scale
+		// handles larger files where the comment fraction is lower.
+		return max(300_000, base*7)
+	}
+	return base
+}
+
 // parseStackDepth returns the stack depth limit scaled to input size.
 func parseStackDepth(sourceLen int) int {
 	return max(1_000, sourceLen*2)

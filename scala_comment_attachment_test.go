@@ -329,3 +329,109 @@ object Fruit:
 		t.Fatalf("trait end = %d, want %d", got, want)
 	}
 }
+
+func TestScalaLargeBlockCommentDoesNotTruncateParse(t *testing.T) {
+	// Regression test: Scala files with large block comments (e.g. license
+	// headers >=7 lines) used to exhaust the default iteration budget
+	// (sourceLen*30) because block_comment is a parser-level production
+	// parsed character-by-character. The language-specific iteration scaling
+	// (3x for Scala) prevents premature truncation.
+	src := `/*
+ * Copyright 2011-2026 GatlingCorp (https://gatling.io)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.gatling.core.action
+
+import com.typesafe.scalalogging.StrictLogging
+
+/**
+ * Top level abstraction in charge of executing concrete actions.
+ */
+trait Action extends StrictLogging {
+  def name: String
+  override def toString: String = name
+
+  def !(session: Session): Unit = {
+    val eventLoop = session.eventLoop
+    if (eventLoop.inEventLoop) {
+      execute(session)
+    }
+  }
+
+  /**
+   * Core method executed when the Action received a Session message
+   *
+   * @param session
+   *   the session of the virtual user
+   * @return
+   *   Nothing
+   */
+  protected def execute(session: Session): Unit
+}
+
+/**
+ * An Action that is to be chained with another.
+ */
+trait ChainableAction extends Action {
+  def next: Action
+}
+`
+	lang := gr.ScalaLanguage()
+	p := ts.NewParser(lang)
+	tree, err := p.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	root := tree.RootNode()
+	if root == nil {
+		t.Fatal("nil root")
+	}
+	rt := tree.ParseRuntime()
+	if rt.StopReason != "accepted" {
+		t.Fatalf("parse truncated: stopReason=%s iterations=%d/%d endByte=%d/%d",
+			rt.StopReason, rt.Iterations, rt.IterationLimit, root.EndByte(), len(src))
+	}
+	if got, want := root.EndByte(), uint32(len(src)); got != want {
+		t.Fatalf("root endByte = %d, want %d (parse did not consume full input)", got, want)
+	}
+
+	// Verify block comments are properly structured (no leaked repeat1 nodes)
+	var repeat1Count int
+	var walk func(n *ts.Node)
+	walk = func(n *ts.Node) {
+		if n == nil {
+			return
+		}
+		if n.Type(lang) == "block_comment_repeat1" {
+			repeat1Count++
+			return
+		}
+		for i := 0; i < n.ChildCount(); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	if repeat1Count > 0 {
+		t.Fatalf("found %d block_comment_repeat1 nodes leaked to root tree", repeat1Count)
+	}
+
+	// Verify key structural nodes exist
+	traitAction := firstNode(root, func(n *ts.Node) bool {
+		return n.Type(lang) == "trait" || n.Type(lang) == "trait_definition"
+	})
+	if traitAction == nil {
+		t.Fatalf("missing trait definition in parsed output: %s", root.SExpr(lang))
+	}
+}

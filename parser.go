@@ -1403,7 +1403,7 @@ func (p *Parser) parseInternal(source []byte, ts TokenSource, reuse *reuseCursor
 	}
 	maxStackCullTrigger := glrStackCullTrigger(maxStacks, arenaClass, langName)
 
-	maxIter := parseIterations(len(source))
+	maxIter := parseIterationsForLanguage(len(source), langName)
 	maxDepth := parseStackDepth(len(source))
 	maxNodes := parseNodeLimit(len(source))
 	if maxNodesOverride > maxNodes {
